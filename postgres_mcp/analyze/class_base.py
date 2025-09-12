@@ -181,7 +181,9 @@ class GPUExtractor:
             outside_cnt = (1.0 - mask).sum(dim=(1, 2, 3), keepdim=True)
             outside_mean = outside_sum / (outside_cnt + 1e-8)
             x = x * (1.0 - mask) + outside_mean * mask
-        q = torch.quantile(x.view(B, -1), q=0.995, dim=1, keepdim=True).view(B, 1, 1, 1).clamp_min_(1e-6)
+        # Fix tensor view compatibility issue by using reshape instead of view
+        x_flat = x.reshape(B, -1) if not x.is_contiguous() else x.view(B, -1)
+        q = torch.quantile(x_flat, q=0.995, dim=1, keepdim=True).reshape(B, 1, 1, 1).clamp_min_(1e-6)
         x = torch.minimum(x, q) / (q + 1e-8)
         return x
 
@@ -229,7 +231,8 @@ class GPUExtractor:
             lowE = rad_mean_b[:, :mid].mean(dim=1, keepdim=True)
             highE = rad_mean_b[:, mid:].mean(dim=1, keepdim=True)
             ratio = lowE / (highE + 1e-8)
-            flat = cart.view(B, -1)
+            # Fix tensor view compatibility issue by using reshape instead of view
+            flat = cart.reshape(B, -1) if not cart.is_contiguous() else cart.view(B, -1)
             q10 = torch.quantile(flat, 0.1, dim=1, keepdim=True)
             q50 = torch.quantile(flat, 0.5, dim=1, keepdim=True)
             q90 = torch.quantile(flat, 0.9, dim=1, keepdim=True)

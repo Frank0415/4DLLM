@@ -958,7 +958,7 @@ async def get_scan_details(
         mat_files_list = [row.cells for row in rows]
 
         # 为了提供更丰富的上下文，我们同时返回扫描的基本信息
-        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = {{}};"
+        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = %s;"
         scan_info_rows = await SafeSqlDriver.execute_param_query(
             sql_driver, scan_info_query, [param]
         )
