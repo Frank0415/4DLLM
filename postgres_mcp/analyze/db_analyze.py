@@ -24,9 +24,7 @@ from .class_base import (
     MONTAGE_GRID,
     FINAL_COLOR_MAP,
 )
-
-# NOTE: sql_driver is expected to be an object provided by the MCP server (SqlDriver or SafeSqlDriver)
-# which exposes async methods: execute_param_query(query, params) -> list[Row], where Row.cells contains column dict.
+from ..sql import SafeSqlDriver
 
 
 async def _load_mat_async(path: str) -> np.ndarray:
@@ -130,11 +128,12 @@ async def analyze_scan(
             rmf.file_path
         FROM raw_mat_files rmf
         JOIN scans s ON rmf.scan_id = s.id
-        WHERE {condition_column} = %s
+        WHERE {condition_column} = {{}} 
         ORDER BY rmf.row_index ASC;
     """
 
-    rows = await sql_driver.execute_param_query(query, [param])
+    rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+
     if not rows:
         raise RuntimeError(f"Could not find scan with identifier: {scan_identifier}")
 

@@ -10,31 +10,17 @@ import scipy.io
 from enum import Enum
 from typing import Any
 from typing import List
-from typing import Literal
 from typing import Union
 from .config import ConfigManager
 
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
-from pydantic import validate_call
 
-from postgres_mcp.index.dta_calc import DatabaseTuningAdvisor
-
-from .artifacts import ErrorResult
-from .artifacts import ExplainPlanArtifact
-from .database_health import DatabaseHealthTool
-from .database_health import HealthType
-from .explain import ExplainPlanTool
-from .index.index_opt_base import MAX_NUM_INDEX_TUNING_QUERIES
-from .index.llm_opt import LLMOptimizerTool
-from .index.presentation import TextPresentation
 from .sql import DbConnPool
 from .sql import SafeSqlDriver
 from .sql import SqlDriver
-from .sql import check_hypopg_installation_status
 from .sql import obfuscate_password
-from .top_queries import TopQueriesCalc
 from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
 
@@ -57,22 +43,24 @@ class AccessMode(str, Enum):
     RESTRICTED = "restricted"  # Read-only with safety features
 
 
-# Global variables
 db_connection = DbConnPool()
 current_access_mode = AccessMode.UNRESTRICTED
 shutdown_in_progress = False
 
+# 创建长期存在的Driver实例
+_unrestricted_driver = SqlDriver(conn=db_connection)
+_restricted_driver = SafeSqlDriver(sql_driver=_unrestricted_driver, timeout=30)
+
 
 async def get_sql_driver() -> Union[SqlDriver, SafeSqlDriver]:
     """Get the appropriate SQL driver based on the current access mode."""
-    base_driver = SqlDriver(conn=db_connection)
-
+    # 不再创建新实例，而是根据模式返回预先创建好的实例
     if current_access_mode == AccessMode.RESTRICTED:
-        logger.debug("Using SafeSqlDriver with restrictions (RESTRICTED mode)")
-        return SafeSqlDriver(sql_driver=base_driver, timeout=30)  # 30 second timeout
+        logger.debug("Using pre-configured SafeSqlDriver (RESTRICTED mode)")
+        return _restricted_driver
     else:
-        logger.debug("Using unrestricted SqlDriver (UNRESTRICTED mode)")
-        return base_driver
+        logger.debug("Using pre-configured unrestricted SqlDriver (UNRESTRICTED mode)")
+        return _unrestricted_driver
 
 
 def format_text_response(text: Any) -> ResponseType:
@@ -713,13 +701,16 @@ async def shutdown(sig=None):
 
     if shutdown_in_progress:
         logger.warning("Forcing immediate exit")
-        # Use sys.exit instead of os._exit to allow for proper cleanup
         sys.exit(1)
 
     shutdown_in_progress = True
 
     if sig:
-        logger.info(f"Received exit signal {sig.name}")
+        try:
+            sig_name = signal.Signals(sig).name
+        except Exception:
+            sig_name = str(sig)
+        logger.info(f"Received exit signal {sig_name}")
 
     # Close database connections
     try:
@@ -728,8 +719,13 @@ async def shutdown(sig=None):
     except Exception as e:
         logger.error(f"Error closing database connections: {e}")
 
-    # Exit with appropriate status code
-    sys.exit(128 + sig if sig is not None else 0)
+    # Determine exit code: 128 + signal number
+    exit_code = (
+        128 + (sig.value if isinstance(sig, signal.Signals) else sig)
+        if sig is not None
+        else 0
+    )
+    sys.exit(exit_code)
 
 
 @mcp.tool(
@@ -761,8 +757,8 @@ async def ingest_scan_from_mib(
     os.makedirs(raw_data_dir, exist_ok=True)
     os.makedirs(processed_data_dir, exist_ok=True)
 
-    # 获取 SQL 驱动
-    sql_driver = await get_sql_driver()
+    # 获取 SQL 驱动 (需要使用无限制的驱动来进行数据插入)
+    sql_driver = _unrestricted_driver
 
     try:
         # --- 阶段 0: 准备工作 (文件标准化) ---
@@ -801,52 +797,53 @@ async def ingest_scan_from_mib(
                 f"Scan '{scan_name}' already exists in the database. Please rename the .mib file or clean the database manually."
             )
 
-        # 使用 WITH ... RETURNING id; 来在一个事务中完成操作
-        async with db_connection.pool.connect() as conn:
-            async with conn.transaction():
-                # 1. 插入 scan 记录
-                scan_id = await conn.fetchval(
-                    "INSERT INTO scans (scan_name, folder_path) VALUES ($1, $2) RETURNING id;",
-                    scan_name,
-                    mat_folder_path,
+        # 1. 插入 scan 记录并获取ID
+        scan_result = await sql_driver.execute_query(
+            "INSERT INTO scans (scan_name, folder_path) VALUES (%s, %s) RETURNING id;",
+            [scan_name, mat_folder_path],
+        )
+        if not scan_result or len(scan_result) == 0:
+            raise RuntimeError("Failed to insert scan record")
+
+        scan_id = scan_result[0].cells["id"]
+        logger.info(f"Created new scan record with id: {scan_id}")
+
+        # 2. 遍历 .mat 文件并批量插入
+        mat_files = sorted(
+            [f for f in os.listdir(mat_folder_path) if f.endswith(".mat")],
+            key=lambda x: int(os.path.splitext(x)[0]),
+        )
+
+        total_patterns = 0
+        for mat_file in mat_files:
+            row_index = int(os.path.splitext(mat_file)[0])
+            file_path = os.path.join(mat_folder_path, mat_file)
+
+            # 插入 raw_mat_file 记录
+            mat_result = await sql_driver.execute_query(
+                "INSERT INTO raw_mat_files (scan_id, row_index, file_path) VALUES (%s, %s, %s) RETURNING id;",
+                [scan_id, row_index, file_path],
+            )
+            if not mat_result or len(mat_result) == 0:
+                raise RuntimeError(f"Failed to insert mat file record for {mat_file}")
+
+            mat_id = mat_result[0].cells["id"]
+
+            # 读取 .mat 文件获取列数，然后批量插入 diffraction_patterns
+            mat_data = scipy.io.loadmat(file_path)["data"]
+            num_cols = mat_data.shape[0]
+
+            # 批量插入 diffraction_patterns
+            for col_idx in range(num_cols):
+                await sql_driver.execute_query(
+                    "INSERT INTO diffraction_patterns (source_mat_id, col_index) VALUES (%s, %s);",
+                    [mat_id, col_idx + 1],
                 )
-                logger.info(f"Created new scan record with id: {scan_id}")
 
-                # 2. 遍历 .mat 文件并批量插入
-                mat_files = sorted(
-                    [f for f in os.listdir(mat_folder_path) if f.endswith(".mat")],
-                    key=lambda x: int(os.path.splitext(x)[0]),
-                )
-
-                total_patterns = 0
-                for mat_file in mat_files:
-                    row_index = int(os.path.splitext(mat_file)[0])
-                    file_path = os.path.join(mat_folder_path, mat_file)
-
-                    # 插入 raw_mat_file 记录
-                    mat_id = await conn.fetchval(
-                        "INSERT INTO raw_mat_files (scan_id, row_index, file_path) VALUES ($1, $2, $3) RETURNING id;",
-                        scan_id,
-                        row_index,
-                        file_path,
-                    )
-
-                    # 读取 .mat 文件获取列数，然后批量插入 diffraction_patterns
-                    mat_data = scipy.io.loadmat(file_path)["data"]
-                    num_cols = mat_data.shape[0]
-                    patterns_data = [
-                        (mat_id, col_idx + 1) for col_idx in range(num_cols)
-                    ]
-
-                    # 使用 psycopg v3 的 executemany
-                    await conn.executemany(
-                        "INSERT INTO diffraction_patterns (source_mat_id, col_index) VALUES ($1, $2);",
-                        patterns_data,
-                    )
-                    logger.info(
-                        f"  ↳ Cataloged {mat_file} (mat_id={mat_id}): {len(patterns_data)} diffraction patterns."
-                    )
-                    total_patterns += len(patterns_data)
+            logger.info(
+                f"  ↳ Cataloged {mat_file} (mat_id={mat_id}): {num_cols} diffraction patterns."
+            )
+            total_patterns += num_cols
 
         success_message = (
             f"Successfully ingested scan '{scan_name}'.\n"
@@ -906,6 +903,10 @@ async def list_ingested_scans() -> ResponseType:
         return format_error_response(str(e))
 
 
+# Add missing decorator so it’s registered as a tool
+@mcp.tool(
+    description="Retrieves a detailed list of raw .mat files for a scan by its ID or name."
+)
 async def get_scan_details(
     scan_identifier: Union[int, str] = Field(
         description="The unique ID (integer) or name (string) associated to one scan in detail."
@@ -972,4 +973,3 @@ async def get_scan_details(
             f"Error getting scan details for '{scan_identifier}': {e}", exc_info=True
         )
         return format_error_response(str(e))
-
