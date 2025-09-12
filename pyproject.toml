@@ -1,0 +1,24 @@
+[project]
+name = "4dllm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.12.15",
+    "google-generativeai>=0.8.5",
+    "httpx[socks]>=0.28.1",
+    "matplotlib>=3.10.6",
+    "mcp>=1.13.1",
+    "numpy>=2.3.2",
+    "openai>=1.106.1",
+    "pglast>=7.7",
+    "psycopg>=3.2.10",
+    "psycopg-binary>=3.2.10",
+    "psycopg-pool>=3.2.6",
+    "psycopg2-binary>=2.9.10",
+    "scipy>=1.16.1",
+    "socks>=0",
+    "socksio>=1.0.0",
+    "torch>=2.8.0",
+]
