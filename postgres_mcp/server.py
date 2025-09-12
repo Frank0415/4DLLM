@@ -5,11 +5,14 @@ import logging
 import os
 import signal
 import sys
+import shutil
+import scipy.io
 from enum import Enum
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Union
+from .config import ConfigManager
 
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP
@@ -660,12 +663,19 @@ async def main():
         default=8000,
         help="Port for SSE server (default: 8000)",
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        help="Path to a custom database config JSON file.",
+        default="config/database.json",
+    )
 
     args = parser.parse_args()
+    args.transport = "sse"  # Force SSE transport for async and background support
 
     # Store the access mode in the global variable
     global current_access_mode
-    current_access_mode = AccessMode(args.access_mode)
+    current_access_mode = AccessMode.UNRESTRICTED
 
     # Add the query tool with a description appropriate to the access mode
     if current_access_mode == AccessMode.UNRESTRICTED:
@@ -675,8 +685,14 @@ async def main():
 
     logger.info(f"Starting PostgreSQL MCP Server in {current_access_mode.upper()} mode")
 
-    # Get database URL from environment variable or command line
-    database_url = os.environ.get("DATABASE_URI", args.database_url)
+    try:
+        config_manager = ConfigManager(config_path=args.config)
+        database_url = config_manager.get_database_url()
+        if not database_url:
+            raise ValueError("Failed to construct database URL from configuration.")
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(f"Configuration Error: {e}")
+        sys.exit(1)  # 配置错误，直接退出
 
     if not database_url:
         raise ValueError(

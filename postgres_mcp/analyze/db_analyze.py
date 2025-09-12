@@ -7,7 +7,7 @@ import numpy as np
 import scipy.io
 
 # reuse clustering and plotting utilities from pre_class_v2
-from class_base import (
+from .class_base import (
     GPUExtractor,
     pca_torch,
     kmeans_torch,
