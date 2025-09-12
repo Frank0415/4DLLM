@@ -205,3 +205,18 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+pgdata/
+1_aligned_Mg_256x256_1ms_ss5.341nm_c2 50um_CL115mm_0.75mrad_spot7_0.042nA_GL3_mag73k_12b 1612.mib
+out
+temp_images_for_llm
+Data
+Raw
+rawdata
+llm_analysis_outputs
+api_manager/api_keys.json
+config/api_keys.json
+postgres_mcp/database.json
+1_updated.mib
+config/database.json
+config/db_config.json
