@@ -36,6 +36,7 @@ from .sql import check_hypopg_installation_status
 from .sql import obfuscate_password
 from .top_queries import TopQueriesCalc
 from .analyze import analyze_scan
+from .import_4dstem import process_one_mib
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -355,89 +356,83 @@ async def get_object_details(
         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Explains the execution plan for a SQL query, showing how the database will execute it and provides detailed cost estimates."
-)
-async def explain_query(
-    sql: str = Field(description="SQL query to explain"),
-    analyze: bool = Field(
-        description="When True, actually runs the query to show real execution statistics instead of estimates. "
-        "Takes longer but provides more accurate information.",
-        default=False,
-    ),
-    hypothetical_indexes: list[dict[str, Any]] = Field(
-        description="""A list of hypothetical indexes to simulate. Each index must be a dictionary with these keys:
-    - 'table': The table name to add the index to (e.g., 'users')
-    - 'columns': List of column names to include in the index (e.g., ['email'] or ['last_name', 'first_name'])
-    - 'using': Optional index method (default: 'btree', other options include 'hash', 'gist', etc.)
+# @mcp.tool(description="Explains the execution plan for a SQL query, showing how the database will execute it and provides detailed cost estimates.")
+# async def explain_query(
+#     sql: str = Field(description="SQL query to explain"),
+#     analyze: bool = Field(
+#         description="When True, actually runs the query to show real execution statistics instead of estimates. "
+#         "Takes longer but provides more accurate information.",
+#         default=False,
+#     ),
+#     hypothetical_indexes: list[dict[str, Any]] = Field(
+#         description="""A list of hypothetical indexes to simulate. Each index must be a dictionary with these keys:
+#     - 'table': The table name to add the index to (e.g., 'users')
+#     - 'columns': List of column names to include in the index (e.g., ['email'] or ['last_name', 'first_name'])
+#     - 'using': Optional index method (default: 'btree', other options include 'hash', 'gist', etc.)
 
-Examples: [
-    {"table": "users", "columns": ["email"], "using": "btree"},
-    {"table": "orders", "columns": ["user_id", "created_at"]}
-]
-If there is no hypothetical index, you can pass an empty list.""",
-        default=[],
-    ),
-) -> ResponseType:
-    """
-    Explains the execution plan for a SQL query.
+# Examples: [
+#     {"table": "users", "columns": ["email"], "using": "btree"},
+#     {"table": "orders", "columns": ["user_id", "created_at"]}
+# ]
+# If there is no hypothetical index, you can pass an empty list.""",
+#         default=[],
+#     ),
+# ) -> ResponseType:
+#     """
+#     Explains the execution plan for a SQL query.
 
-    Args:
-        sql: The SQL query to explain
-        analyze: When True, actually runs the query for real statistics
-        hypothetical_indexes: Optional list of indexes to simulate
-    """
-    try:
-        sql_driver = await get_sql_driver()
-        explain_tool = ExplainPlanTool(sql_driver=sql_driver)
-        result: ExplainPlanArtifact | ErrorResult | None = None
+#     Args:
+#         sql: The SQL query to explain
+#         analyze: When True, actually runs the query for real statistics
+#         hypothetical_indexes: Optional list of indexes to simulate
+#     """
+#     try:
+#         sql_driver = await get_sql_driver()
+#         explain_tool = ExplainPlanTool(sql_driver=sql_driver)
+#         result: ExplainPlanArtifact | ErrorResult | None = None
 
-        # If hypothetical indexes are specified, check for HypoPG extension
-        if hypothetical_indexes and len(hypothetical_indexes) > 0:
-            if analyze:
-                return format_error_response(
-                    "Cannot use analyze and hypothetical indexes together"
-                )
-            try:
-                # Use the common utility function to check if hypopg is installed
-                (
-                    is_hypopg_installed,
-                    hypopg_message,
-                ) = await check_hypopg_installation_status(sql_driver)
+#         # If hypothetical indexes are specified, check for HypoPG extension
+#         if hypothetical_indexes and len(hypothetical_indexes) > 0:
+#             if analyze:
+#                 return format_error_response("Cannot use analyze and hypothetical indexes together")
+#             try:
+#                 # Use the common utility function to check if hypopg is installed
+#                 (
+#                     is_hypopg_installed,
+#                     hypopg_message,
+#                 ) = await check_hypopg_installation_status(sql_driver)
 
-                # If hypopg is not installed, return the message
-                if not is_hypopg_installed:
-                    return format_text_response(hypopg_message)
+#                 # If hypopg is not installed, return the message
+#                 if not is_hypopg_installed:
+#                     return format_text_response(hypopg_message)
 
-                # HypoPG is installed, proceed with explaining with hypothetical indexes
-                result = await explain_tool.explain_with_hypothetical_indexes(
-                    sql, hypothetical_indexes
-                )
-            except Exception:
-                raise  # Re-raise the original exception
-        elif analyze:
-            try:
-                # Use EXPLAIN ANALYZE
-                result = await explain_tool.explain_analyze(sql)
-            except Exception:
-                raise  # Re-raise the original exception
-        else:
-            try:
-                # Use basic EXPLAIN
-                result = await explain_tool.explain(sql)
-            except Exception:
-                raise  # Re-raise the original exception
+#                 # HypoPG is installed, proceed with explaining with hypothetical indexes
+#                 result = await explain_tool.explain_with_hypothetical_indexes(sql, hypothetical_indexes)
+#             except Exception:
+#                 raise  # Re-raise the original exception
+#         elif analyze:
+#             try:
+#                 # Use EXPLAIN ANALYZE
+#                 result = await explain_tool.explain_analyze(sql)
+#             except Exception:
+#                 raise  # Re-raise the original exception
+#         else:
+#             try:
+#                 # Use basic EXPLAIN
+#                 result = await explain_tool.explain(sql)
+#             except Exception:
+#                 raise  # Re-raise the original exception
 
-        if result and isinstance(result, ExplainPlanArtifact):
-            return format_text_response(result.to_text())
-        else:
-            error_message = "Error processing explain plan"
-            if isinstance(result, ErrorResult):
-                error_message = result.to_text()
-            return format_error_response(error_message)
-    except Exception as e:
-        logger.error(f"Error explaining query: {e}")
-        return format_error_response(str(e))
+#         if result and isinstance(result, ExplainPlanArtifact):
+#             return format_text_response(result.to_text())
+#         else:
+#             error_message = "Error processing explain plan"
+#             if isinstance(result, ErrorResult):
+#                 error_message = result.to_text()
+#             return format_error_response(error_message)
+#     except Exception as e:
+#         logger.error(f"Error explaining query: {e}")
+#         return format_error_response(str(e))
 
 
 # Query function declaration without the decorator - we'll add it dynamically based on access mode
@@ -456,133 +451,111 @@ async def execute_sql(
         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Analyze frequently executed queries in the database and recommend optimal indexes"
-)
-@validate_call
-async def analyze_workload_indexes(
-    max_index_size_mb: int = Field(description="Max index size in MB", default=10000),
-    method: Literal["dta", "llm"] = Field(
-        description="Method to use for analysis", default="dta"
-    ),
-) -> ResponseType:
-    """Analyze frequently executed queries in the database and recommend optimal indexes."""
-    try:
-        sql_driver = await get_sql_driver()
-        if method == "dta":
-            index_tuning = DatabaseTuningAdvisor(sql_driver)
-        else:
-            index_tuning = LLMOptimizerTool(sql_driver)
-        dta_tool = TextPresentation(sql_driver, index_tuning)
-        result = await dta_tool.analyze_workload(max_index_size_mb=max_index_size_mb)
-        return format_text_response(result)
-    except Exception as e:
-        logger.error(f"Error analyzing workload: {e}")
-        return format_error_response(str(e))
+# @mcp.tool(description="Analyze frequently executed queries in the database and recommend optimal indexes")
+# @validate_call
+# async def analyze_workload_indexes(
+#     max_index_size_mb: int = Field(description="Max index size in MB", default=10000),
+#     method: Literal["dta", "llm"] = Field(description="Method to use for analysis", default="dta"),
+# ) -> ResponseType:
+#     """Analyze frequently executed queries in the database and recommend optimal indexes."""
+#     try:
+#         sql_driver = await get_sql_driver()
+#         if method == "dta":
+#             index_tuning = DatabaseTuningAdvisor(sql_driver)
+#         else:
+#             index_tuning = LLMOptimizerTool(sql_driver)
+#         dta_tool = TextPresentation(sql_driver, index_tuning)
+#         result = await dta_tool.analyze_workload(max_index_size_mb=max_index_size_mb)
+#         return format_text_response(result)
+#     except Exception as e:
+#         logger.error(f"Error analyzing workload: {e}")
+#         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Analyze a list of (up to 10) SQL queries and recommend optimal indexes"
-)
-@validate_call
-async def analyze_query_indexes(
-    queries: list[str] = Field(description="List of Query strings to analyze"),
-    max_index_size_mb: int = Field(description="Max index size in MB", default=10000),
-    method: Literal["dta", "llm"] = Field(
-        description="Method to use for analysis", default="dta"
-    ),
-) -> ResponseType:
-    """Analyze a list of SQL queries and recommend optimal indexes."""
-    if len(queries) == 0:
-        return format_error_response(
-            "Please provide a non-empty list of queries to analyze."
-        )
-    if len(queries) > MAX_NUM_INDEX_TUNING_QUERIES:
-        return format_error_response(
-            f"Please provide a list of up to {MAX_NUM_INDEX_TUNING_QUERIES} queries to analyze."
-        )
+# @mcp.tool(description="Analyze a list of (up to 10) SQL queries and recommend optimal indexes")
+# @validate_call
+# async def analyze_query_indexes(
+#     queries: list[str] = Field(description="List of Query strings to analyze"),
+#     max_index_size_mb: int = Field(description="Max index size in MB", default=10000),
+#     method: Literal["dta", "llm"] = Field(description="Method to use for analysis", default="dta"),
+# ) -> ResponseType:
+#     """Analyze a list of SQL queries and recommend optimal indexes."""
+#     if len(queries) == 0:
+#         return format_error_response("Please provide a non-empty list of queries to analyze.")
+#     if len(queries) > MAX_NUM_INDEX_TUNING_QUERIES:
+#         return format_error_response(f"Please provide a list of up to {MAX_NUM_INDEX_TUNING_QUERIES} queries to analyze.")
 
-    try:
-        sql_driver = await get_sql_driver()
-        if method == "dta":
-            index_tuning = DatabaseTuningAdvisor(sql_driver)
-        else:
-            index_tuning = LLMOptimizerTool(sql_driver)
-        dta_tool = TextPresentation(sql_driver, index_tuning)
-        result = await dta_tool.analyze_queries(
-            queries=queries, max_index_size_mb=max_index_size_mb
-        )
-        return format_text_response(result)
-    except Exception as e:
-        logger.error(f"Error analyzing queries: {e}")
-        return format_error_response(str(e))
+#     try:
+#         sql_driver = await get_sql_driver()
+#         if method == "dta":
+#             index_tuning = DatabaseTuningAdvisor(sql_driver)
+#         else:
+#             index_tuning = LLMOptimizerTool(sql_driver)
+#         dta_tool = TextPresentation(sql_driver, index_tuning)
+#         result = await dta_tool.analyze_queries(queries=queries, max_index_size_mb=max_index_size_mb)
+#         return format_text_response(result)
+#     except Exception as e:
+#         logger.error(f"Error analyzing queries: {e}")
+#         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Analyzes database health. Here are the available health checks:\n"
-    "- index - checks for invalid, duplicate, and bloated indexes\n"
-    "- connection - checks the number of connection and their utilization\n"
-    "- vacuum - checks vacuum health for transaction id wraparound\n"
-    "- sequence - checks sequences at risk of exceeding their maximum value\n"
-    "- replication - checks replication health including lag and slots\n"
-    "- buffer - checks for buffer cache hit rates for indexes and tables\n"
-    "- constraint - checks for invalid constraints\n"
-    "- all - runs all checks\n"
-    "You can optionally specify a single health check or a comma-separated list of health checks. The default is 'all' checks."
-)
-async def analyze_db_health(
-    health_type: str = Field(
-        description=f"Optional. Valid values are: {', '.join(sorted([t.value for t in HealthType]))}.",
-        default="all",
-    ),
-) -> ResponseType:
-    """Analyze database health for specified components.
+# @mcp.tool(
+#     description="Analyzes database health. Here are the available health checks:\n"
+#     "- index - checks for invalid, duplicate, and bloated indexes\n"
+#     "- connection - checks the number of connection and their utilization\n"
+#     "- vacuum - checks vacuum health for transaction id wraparound\n"
+#     "- sequence - checks sequences at risk of exceeding their maximum value\n"
+#     "- replication - checks replication health including lag and slots\n"
+#     "- buffer - checks for buffer cache hit rates for indexes and tables\n"
+#     "- constraint - checks for invalid constraints\n"
+#     "- all - runs all checks\n"
+#     "You can optionally specify a single health check or a comma-separated list of health checks. The default is 'all' checks."
+# )
+# async def analyze_db_health(
+#     health_type: str = Field(
+#         description=f"Optional. Valid values are: {', '.join(sorted([t.value for t in HealthType]))}.",
+#         default="all",
+#     ),
+# ) -> ResponseType:
+#     """Analyze database health for specified components.
 
-    Args:
-        health_type: Comma-separated list of health check types to perform.
-                    Valid values: index, connection, vacuum, sequence, replication, buffer, constraint, all
-    """
-    health_tool = DatabaseHealthTool(await get_sql_driver())
-    result = await health_tool.health(health_type=health_type)
-    return format_text_response(result)
+#     Args:
+#         health_type: Comma-separated list of health check types to perform.
+#                     Valid values: index, connection, vacuum, sequence, replication, buffer, constraint, all
+#     """
+#     health_tool = DatabaseHealthTool(await get_sql_driver())
+#     result = await health_tool.health(health_type=health_type)
+#     return format_text_response(result)
 
 
-@mcp.tool(
-    name="get_top_queries",
-    description=f"Reports the slowest or most resource-intensive queries using data from the '{PG_STAT_STATEMENTS}' extension.",
-)
-async def get_top_queries(
-    sort_by: str = Field(
-        description="Ranking criteria: 'total_time' for total execution time or 'mean_time' for mean execution time per call, or 'resources' "
-        "for resource-intensive queries",
-        default="resources",
-    ),
-    limit: int = Field(
-        description="Number of queries to return when ranking based on mean_time or total_time",
-        default=10,
-    ),
-) -> ResponseType:
-    try:
-        sql_driver = await get_sql_driver()
-        top_queries_tool = TopQueriesCalc(sql_driver=sql_driver)
+# @mcp.tool(
+#     name="get_top_queries",
+#     description=f"Reports the slowest or most resource-intensive queries using data from the '{PG_STAT_STATEMENTS}' extension.",
+# )
+# async def get_top_queries(
+#     sort_by: str = Field(
+#         description="Ranking criteria: 'total_time' for total execution time or 'mean_time' for mean execution time per call, or 'resources' "
+#         "for resource-intensive queries",
+#         default="resources",
+#     ),
+#     limit: int = Field(description="Number of queries to return when ranking based on mean_time or total_time", default=10),
+# ) -> ResponseType:
+#     try:
+#         sql_driver = await get_sql_driver()
+#         top_queries_tool = TopQueriesCalc(sql_driver=sql_driver)
 
-        if sort_by == "resources":
-            result = await top_queries_tool.get_top_resource_queries()
-            return format_text_response(result)
-        elif sort_by == "mean_time" or sort_by == "total_time":
-            # Map the sort_by values to what get_top_queries_by_time expects
-            result = await top_queries_tool.get_top_queries_by_time(
-                limit=limit, sort_by="mean" if sort_by == "mean_time" else "total"
-            )
-        else:
-            return format_error_response(
-                "Invalid sort criteria. Please use 'resources' or 'mean_time' or 'total_time'."
-            )
-        return format_text_response(result)
-    except Exception as e:
-        logger.error(f"Error getting slow queries: {e}")
-        return format_error_response(str(e))
-
+#         if sort_by == "resources":
+#             result = await top_queries_tool.get_top_resource_queries()
+#             return format_text_response(result)
+#         elif sort_by == "mean_time" or sort_by == "total_time":
+#             # Map the sort_by values to what get_top_queries_by_time expects
+#             result = await top_queries_tool.get_top_queries_by_time(limit=limit, sort_by="mean" if sort_by == "mean_time" else "total")
+#         else:
+#             return format_error_response("Invalid sort criteria. Please use 'resources' or 'mean_time' or 'total_time'.")
+#         return format_text_response(result)
+#     except Exception as e:
+#         logger.error(f"Error getting slow queries: {e}")
+#         return format_error_response(str(e))
 
 @mcp.tool(
     description="Run clustering analysis on a 4D-STEM scan stored in the database. This performs feature extraction, PCA, k-means clustering, and generates montages and XY maps."
@@ -636,14 +609,19 @@ async def analyze_scan_tool(
 async def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="PostgreSQL MCP Server")
-    parser.add_argument("database_url", help="Database connection URL", nargs="?")
     parser.add_argument(
-        "--access-mode",
+        "--config",
         type=str,
-        choices=[mode.value for mode in AccessMode],
-        default=AccessMode.UNRESTRICTED.value,
-        help="Set SQL access mode: unrestricted (unrestricted) or restricted (read-only with protections)",
+        help="Path to a custom database config JSON file.",
+        default="config/database.json",
     )
+    # parser.add_argument(
+    #     "--access-mode",
+    #     type=str,
+    #     choices=[mode.value for mode in AccessMode],
+    #     default=AccessMode.UNRESTRICTED.value,
+    #     help="Set SQL access mode: unrestricted (unrestricted) or restricted (read-only with protections)",
+    # )
     parser.add_argument(
         "--transport",
         type=str,
@@ -662,12 +640,6 @@ async def main():
         type=int,
         default=8000,
         help="Port for SSE server (default: 8000)",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        help="Path to a custom database config JSON file.",
-        default="config/database.json",
     )
 
     args = parser.parse_args()
@@ -757,3 +729,241 @@ async def shutdown(sig=None):
 
     # Exit with appropriate status code
     sys.exit(128 + sig if sig is not None else 0)
+
+
+@mcp.tool(
+    description="Processes a .mib file, unpacks it into .mat files, and catalogs the entire scan structure into the database."
+)
+async def ingest_scan_from_mib(
+    source_mib_path: str = Field(
+        description="The absolute path to the source .mib file on the server's filesystem."
+    ),
+) -> ResponseType:
+    """
+    When you run this function, you are running the first step of the 4D-STEM data ingestion pipeline. You are a helpful assistant that helps users process and ingest new 4D-STEM scans from .mib files into a PostgreSQL database.
+    This is a one-stop tool to process and ingest a new 4D-STEM scan from a .mib file.
+    This tool performs a multi-step workflow:
+    1. Standardizes file locations by copying the source .mib to a managed 'Raw' directory.
+    2. Unpacks the .mib file into a structured folder of .mat files within a 'Data' directory.
+    3. Catalogs the entire file structure (scan, .mat files, diffraction points) into the PostgreSQL database.
+    """
+    # --- 0. 标准化目录和数据库配置 ---
+    # 使用 os.path.dirname(__file__) 来动态确定当前文件位置，构建相对路径
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(
+        os.path.join(base_dir, "..")
+    )  # 假设 server.py 在 postgres_mcp/ 目录下
+    raw_data_dir = os.path.join(project_root, "Raw")
+    processed_data_dir = os.path.join(project_root, "Data")
+
+    logger.info(f"Project Root detected at: {project_root}")
+    os.makedirs(raw_data_dir, exist_ok=True)
+    os.makedirs(processed_data_dir, exist_ok=True)
+
+    # 获取 SQL 驱动
+    sql_driver = await get_sql_driver()
+
+    try:
+        # --- 阶段 0: 准备工作 (文件标准化) ---
+        logger.info("Phase 0: Standardizing file locations.")
+        if not os.path.exists(source_mib_path):
+            raise FileNotFoundError(f"Source file not found: {source_mib_path}")
+
+        mib_filename = os.path.basename(source_mib_path)
+        managed_mib_path = os.path.join(raw_data_dir, mib_filename)
+        shutil.copy2(source_mib_path, managed_mib_path)
+        logger.info(f"Copied source .mib to managed location: {managed_mib_path}")
+
+        # --- 阶段 1: 解包 .mib 文件 ---
+        logger.info(f"Phase 1: Unpacking {mib_filename} to .mat directory.")
+        scan_name = os.path.splitext(mib_filename)[0]
+        mat_folder_path = os.path.join(processed_data_dir, scan_name)
+
+        # 调用您的处理函数
+        process_one_mib(managed_mib_path, processed_data_dir)
+
+        if not os.path.exists(mat_folder_path):
+            raise IOError(f".mat folder was not generated at {mat_folder_path}")
+        logger.info(f"Unpacking complete. Data is in: {mat_folder_path}")
+
+        # --- 阶段 2: 将文件结构编目到数据库 ---
+        logger.info("Phase 2: Cataloging file structure into PostgreSQL.")
+
+        # 检查扫描是否已存在 (这里我们简化处理，如果存在则报错，更复杂的逻辑可以后续添加)
+        existing_scan = await sql_driver.execute_param_query(
+            "SELECT id FROM scans WHERE scan_name = %s;", [scan_name]
+        )
+        if existing_scan:
+            return format_error_response(
+                f"Scan '{scan_name}' already exists in the database. Please rename the .mib file or clean the database manually."
+            )
+
+        # 使用 WITH ... RETURNING id; 来在一个事务中完成操作
+        async with await db_connection.get_conn() as conn:
+            async with conn.transaction():
+                # 1. 插入 scan 记录
+                scan_id = await conn.fetchval(
+                    "INSERT INTO scans (scan_name, folder_path) VALUES ($1, $2) RETURNING id;",
+                    scan_name,
+                    mat_folder_path,
+                )
+                logger.info(f"Created new scan record with id: {scan_id}")
+
+                # 2. 遍历 .mat 文件并批量插入
+                mat_files = sorted(
+                    [f for f in os.listdir(mat_folder_path) if f.endswith(".mat")],
+                    key=lambda x: int(os.path.splitext(x)[0]),
+                )
+
+                total_patterns = 0
+                for mat_file in mat_files:
+                    row_index = int(os.path.splitext(mat_file)[0])
+                    file_path = os.path.join(mat_folder_path, mat_file)
+
+                    # 插入 raw_mat_file 记录
+                    mat_id = await conn.fetchval(
+                        "INSERT INTO raw_mat_files (scan_id, row_index, file_path) VALUES ($1, $2, $3) RETURNING id;",
+                        scan_id,
+                        row_index,
+                        file_path,
+                    )
+
+                    # 读取 .mat 文件获取列数，然后批量插入 diffraction_patterns
+                    mat_data = scipy.io.loadmat(file_path)["data"]
+                    num_cols = mat_data.shape[0]
+                    patterns_data = [
+                        (mat_id, col_idx + 1) for col_idx in range(num_cols)
+                    ]
+
+                    # 使用 psycopg v3 的 executemany
+                    await conn.executemany(
+                        "INSERT INTO diffraction_patterns (source_mat_id, col_index) VALUES ($1, $2);",
+                        patterns_data,
+                    )
+                    logger.info(
+                        f"  ↳ Cataloged {mat_file} (mat_id={mat_id}): {len(patterns_data)} diffraction patterns."
+                    )
+                    total_patterns += len(patterns_data)
+
+        success_message = (
+            f"Successfully ingested scan '{scan_name}'.\n"
+            f"- Scan ID: {scan_id}\n"
+            f"- Total .mat files processed: {len(mat_files)}\n"
+            f"- Total diffraction patterns cataloged: {total_patterns}"
+        )
+        logger.info(success_message)
+        return format_text_response(success_message)
+
+    except Exception as e:
+        logger.error(f"Error during ingestion process: {e}", exc_info=True)
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Lists a high-level summary of all scientific scans ingested from .mib files."
+)
+async def list_ingested_scans() -> ResponseType:
+    """
+    Retrieves a top-level summary of all scans stored in the database.
+
+    This tool provides the most essential information for each scan: its unique ID,
+    the scan name (derived from the original .mib file), its original folder path,
+    and the date it was cataloged. It deliberately avoids details about .mat files
+    or diffraction patterns to keep the overview clean and fast.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # 【已修改】查询语句现在变得非常简单，只查询 scans 表
+        query = """
+            SELECT 
+                id AS scan_id,
+                scan_name,
+                folder_path,
+                created_at AS ingestion_date
+            FROM 
+                scans
+            ORDER BY 
+                ingestion_date DESC;
+        """
+
+        rows = await sql_driver.execute_query(query)
+
+        if not rows:
+            return format_text_response(
+                "No scans have been ingested into the database yet."
+            )
+
+        scans_summary = [row.cells for row in rows]
+
+        return format_text_response(scans_summary)
+
+    except Exception as e:
+        logger.error(f"Error listing ingested scans: {e}", exc_info=True)
+        return format_error_response(str(e))
+
+
+async def get_scan_details(
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) associated to one scan in detail."
+    ),
+) -> ResponseType:
+    """
+    Retrieves a detailed list of all raw .mat files associated with a single scan.
+
+    You can identify the scan either by its integer `scan_id` (preferred for accuracy)
+    or its string `scan_name`. The tool returns the row index and the full file path
+    for each .mat file belonging to that scan.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # 根据输入的标识符类型，动态构建查询条件
+        if isinstance(scan_identifier, int):
+            # 通过 ID 查询，更精确
+            condition_column = "s.id"
+            param = scan_identifier
+        else:
+            # 通过名称查询
+            condition_column = "s.scan_name"
+            param = str(scan_identifier)
+
+        query = f"""
+            SELECT 
+                rmf.row_index,
+                rmf.file_path,
+                rmf.id AS mat_file_id
+            FROM 
+                raw_mat_files rmf
+            JOIN 
+                scans s ON rmf.scan_id = s.id
+            WHERE 
+                {condition_column} = %s
+            ORDER BY 
+                rmf.row_index ASC;
+        """
+
+        # 使用参数化查询来防止SQL注入
+        rows = await sql_driver.execute_param_query(query, [param])
+
+        if not rows:
+            return format_error_response(
+                f"Could not find a scan with identifier: '{scan_identifier}'. Please check the ID or name."
+            )
+
+        mat_files_list = [row.cells for row in rows]
+
+        # 为了提供更丰富的上下文，我们同时返回扫描的基本信息
+        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = %s;"
+        scan_info_rows = await sql_driver.execute_param_query(scan_info_query, [param])
+        scan_info = scan_info_rows[0].cells if scan_info_rows else {}
+
+        response_payload = {"scan_info": scan_info, "mat_files": mat_files_list}
+
+        return format_text_response(response_payload)
+
+    except Exception as e:
+        logger.error(
+            f"Error getting scan details for '{scan_identifier}': {e}", exc_info=True
+        )
+        return format_error_response(str(e))
