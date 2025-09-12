@@ -1,0 +1,8 @@
+{
+  "api_keys": [
+    "your-api-key-1",
+    "your-api-key-2"
+  ],
+  "base_url": "https://api.proxy.org/google",
+  "model": "gemini-114514"
+}
