@@ -1,0 +1,31 @@
+services:
+  # PostgreSQL 数据库服务
+  postgres_db:
+    image: postgres:17
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: 4dllm
+      POSTGRES_PASSWORD: 1234
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # pgAdmin 可视化管理工具
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@sjtu.edu.cn
+      PGADMIN_DEFAULT_PASSWORD: 1234
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres_db
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    driver: local
