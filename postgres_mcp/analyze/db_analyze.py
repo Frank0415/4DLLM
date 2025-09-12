@@ -128,7 +128,7 @@ async def analyze_scan(
             rmf.file_path
         FROM raw_mat_files rmf
         JOIN scans s ON rmf.scan_id = s.id
-        WHERE {condition_column} = {{}} 
+        WHERE {condition_column} = %s
         ORDER BY rmf.row_index ASC;
     """
 

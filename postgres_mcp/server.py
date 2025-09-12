@@ -1,12 +1,15 @@
-# ruff: noqa: B008
 import argparse
 import asyncio
+import datetime
 import logging
 import os
 import signal
 import sys
 import shutil
 import scipy.io
+import subprocess
+import time
+import uuid
 from enum import Enum
 from typing import Any
 from typing import List
@@ -23,6 +26,7 @@ from .sql import SqlDriver
 from .sql import obfuscate_password
 from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
+from .lock_manager import LockManager
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -972,4 +976,96 @@ async def get_scan_details(
         logger.error(
             f"Error getting scan details for '{scan_identifier}': {e}", exc_info=True
         )
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Check the status of background analysis jobs."
+)
+async def check_analysis_status() -> ResponseType:
+    """
+    Check the status of background analysis jobs.
+    
+    Returns information about currently running analysis tasks or indicates
+    that no analysis is currently running.
+    """
+    try:
+        if LockManager.is_locked():
+            lock_info = LockManager.get_lock_info()
+            if lock_info:
+                # Check if the process is still running
+                pid = lock_info.get("pid")
+                job_id = lock_info.get("job_id", "unknown")
+                scan_identifier = lock_info.get("scan_identifier", "unknown")
+                timestamp = lock_info.get("timestamp", 0)
+                
+                # Format the start time
+                import datetime
+                start_time = datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Check log file for progress
+                import os
+                log_dir = "/tmp/4dllm_logs"
+                log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
+                progress_info = ""
+                
+                if os.path.exists(log_file):
+                    # Read last few lines of the log file for progress
+                    try:
+                        with open(log_file, 'r') as f:
+                            lines = f.readlines()
+                            # Get last 10 lines
+                            last_lines = lines[-10:] if len(lines) > 10 else lines
+                            progress_info = "\nRecent log entries:\n" + "".join(last_lines)
+                    except Exception as e:
+                        progress_info = f"\nCould not read log file: {e}"
+                
+                status_msg = (
+                    f"Analysis job is currently running:\n"
+                    f"- Job ID: {job_id}\n"
+                    f"- Scan: {scan_identifier}\n"
+                    f"- Started: {start_time}\n"
+                    f"- Process PID: {pid}\n"
+                    f"- Log file: {log_file}"
+                    f"{progress_info}"
+                )
+                
+                return format_text_response(status_msg)
+            else:
+                return format_text_response("System is locked, but no job information available.")
+        else:
+            return format_text_response("No analysis jobs are currently running.")
+            
+    except Exception as e:
+        logger.error(f"Error checking analysis status: {e}", exc_info=True)
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Get detailed progress log for a specific analysis job."
+)
+async def get_analysis_log(
+    job_id: str = Field(description="Job ID of the analysis task")
+) -> ResponseType:
+    """
+    Get detailed progress log for a specific analysis job.
+    
+    Returns the full log content for the specified job ID.
+    """
+    try:
+        import os
+        log_dir = "/tmp/4dllm_logs"
+        log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
+        
+        if not os.path.exists(log_file):
+            return format_error_response(f"Log file not found for job ID: {job_id}")
+        
+        # Read the log file
+        with open(log_file, 'r') as f:
+            log_content = f.read()
+        
+        return format_text_response(f"Log content for job {job_id}:\n\n{log_content}")
+        
+    except Exception as e:
+        logger.error(f"Error reading log for job {job_id}: {e}", exc_info=True)
         return format_error_response(str(e))
