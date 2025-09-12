@@ -557,6 +557,7 @@ async def execute_sql(
 #         logger.error(f"Error getting slow queries: {e}")
 #         return format_error_response(str(e))
 
+
 @mcp.tool(
     description="Run clustering analysis on a 4D-STEM scan stored in the database. This performs feature extraction, PCA, k-means clustering, and generates montages and XY maps."
 )
@@ -643,7 +644,7 @@ async def main():
     )
 
     args = parser.parse_args()
-    args.transport = "sse"  # Force SSE transport for async and background support
+    args.transport = "stdio"  # Force STDIO transport for async and background support
 
     # Store the access mode in the global variable
     global current_access_mode
@@ -789,9 +790,11 @@ async def ingest_scan_from_mib(
         # --- 阶段 2: 将文件结构编目到数据库 ---
         logger.info("Phase 2: Cataloging file structure into PostgreSQL.")
 
-        # 检查扫描是否已存在 (这里我们简化处理，如果存在则报错，更复杂的逻辑可以后续添加)
-        existing_scan = await sql_driver.execute_param_query(
-            "SELECT id FROM scans WHERE scan_name = %s;", [scan_name]
+        # 检查扫描是否已存在
+        existing_scan = await SafeSqlDriver.execute_param_query(
+            sql_driver,
+            "SELECT id FROM scans WHERE scan_name = {};",
+            [scan_name],
         )
         if existing_scan:
             return format_error_response(
@@ -799,7 +802,7 @@ async def ingest_scan_from_mib(
             )
 
         # 使用 WITH ... RETURNING id; 来在一个事务中完成操作
-        async with await db_connection.get_conn() as conn:
+        async with db_connection.pool.connect() as conn:
             async with conn.transaction():
                 # 1. 插入 scan 记录
                 scan_id = await conn.fetchval(
@@ -938,13 +941,13 @@ async def get_scan_details(
             JOIN 
                 scans s ON rmf.scan_id = s.id
             WHERE 
-                {condition_column} = %s
+                {condition_column} = {{}} 
             ORDER BY 
                 rmf.row_index ASC;
         """
 
         # 使用参数化查询来防止SQL注入
-        rows = await sql_driver.execute_param_query(query, [param])
+        rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
 
         if not rows:
             return format_error_response(
@@ -954,8 +957,10 @@ async def get_scan_details(
         mat_files_list = [row.cells for row in rows]
 
         # 为了提供更丰富的上下文，我们同时返回扫描的基本信息
-        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = %s;"
-        scan_info_rows = await sql_driver.execute_param_query(scan_info_query, [param])
+        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = {{}};"
+        scan_info_rows = await SafeSqlDriver.execute_param_query(
+            sql_driver, scan_info_query, [param]
+        )
         scan_info = scan_info_rows[0].cells if scan_info_rows else {}
 
         response_payload = {"scan_info": scan_info, "mat_files": mat_files_list}
@@ -967,3 +972,4 @@ async def get_scan_details(
             f"Error getting scan details for '{scan_identifier}': {e}", exc_info=True
         )
         return format_error_response(str(e))
+
