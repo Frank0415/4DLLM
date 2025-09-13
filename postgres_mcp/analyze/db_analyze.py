@@ -22,8 +22,9 @@ from .class_base import (
     NTHETA,
     BATCH,
     MONTAGE_GRID,
-    FINAL_COLOR_MAP,
+    CATEGORIES,
 )
+from .type_colors import get_color_map
 from ..sql import SafeSqlDriver
 
 
@@ -79,8 +80,8 @@ def _do_clustering_sync(
     save_cluster_montages(data, labels_np, min_d2_np, montage_dir, grid=MONTAGE_GRID)
     logger.info(f"      📁 Saved cluster montages to: {montage_dir}")
 
-    # Map clusters to semantic keys (cycle through available keys)
-    semantic_keys = list(FINAL_COLOR_MAP.keys())
+    # Map clusters to semantic keys (cycle through available keys cause it's under development)
+    semantic_keys = CATEGORIES
     user_map = {i: semantic_keys[i % len(semantic_keys)] for i in range(k_clusters)}
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -90,7 +91,7 @@ def _do_clustering_sync(
         ys,
         labels_np,
         user_map,
-        FINAL_COLOR_MAP,
+        get_color_map(user_map),
         final_xy_path,
         title=f"{scan_name} K={k_clusters}",
     )

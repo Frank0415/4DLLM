@@ -25,6 +25,8 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 
+from type_colors import get_color_map
+
 # =========================
 #           CONFIG
 # =========================
@@ -50,12 +52,14 @@ MONTAGE_GRID = (10, 10)
 MAX_EMB_POINTS = 65536
 
 CATEGORIES = ["empty", "amorphous", "crystalline", "mixing"]
+"""
 FINAL_COLOR_MAP = {
     "empty": "#440154",
     "amorphous": "#3b528b",
     "crystalline": "#21908d",
     "mixing": "#5dc863",
 }
+"""
 
 
 # =========================
@@ -89,14 +93,27 @@ def open_file_explorer(path: Path):
 
 def xy_plot_final(xs, ys, labels, user_map, color_map, path: Path, title: str):
     xs, ys = np.asarray(xs, dtype=np.int32), np.asarray(ys, dtype=np.int32)
-    semantic_labels = np.array([user_map.get(l, "unlabeled") for l in labels])
+    labels_str = labels.astype(str)
+    type_members_list = []
+    type_members_map = {value: [] for value in user_map.values()}
+    for label, data_type in user_map.items():
+        type_members_map[data_type].append((label, len(type_members_map[data_type])))
+        type_members_list.append(type_members_map[data_type][-1])
+
     plt.figure(figsize=(8, 7), dpi=150)
     ax = plt.gca()
     for label_name, color in color_map.items():
-        mask = semantic_labels == label_name
+        mask = labels_str == label_name
         if np.any(mask):
             plt.scatter(
-                ys[mask], xs[mask], s=6, alpha=0.9, label=label_name, color=color
+                ys[mask],
+                xs[mask],
+                s=6,
+                alpha=0.9,
+                label=user_map[int(label_name)]
+                + "_"
+                + str(type_members_list[int(label_name)][1]),
+                color=color,
             )
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlim(ys.min(), ys.max())
@@ -104,7 +121,7 @@ def xy_plot_final(xs, ys, labels, user_map, color_map, path: Path, title: str):
     ax.invert_yaxis()
     plt.xlabel("Scan Pixel Y")
     plt.ylabel("Scan Pixel X")
-    plt.legend(markerscale=3, fontsize=10, frameon=True)
+    plt.legend(markerscale=3, fontsize=10, frameon=True, bbox_to_anchor=(1.01, 1))
     plt.title(title)
     plt.tight_layout()
     plt.savefig(path)
@@ -215,11 +232,19 @@ class GPUExtractor:
     def _pool_bins(self, BR, bin_idx_R, counts, num_bins):
         B, R = BR.shape
         # Use reshape instead of view for better compatibility with non-contiguous tensors
-        idx = bin_idx_R.reshape(1, R).expand(B, R) if not bin_idx_R.is_contiguous() else bin_idx_R.view(1, R).expand(B, R)
+        idx = (
+            bin_idx_R.reshape(1, R).expand(B, R)
+            if not bin_idx_R.is_contiguous()
+            else bin_idx_R.view(1, R).expand(B, R)
+        )
         out = torch.zeros(B, num_bins, device=BR.device, dtype=BR.dtype)
         out.scatter_add_(1, idx, BR)
         # Use reshape instead of view for better compatibility
-        counts_reshaped = counts.reshape(1, num_bins) if not counts.is_contiguous() else counts.view(1, num_bins)
+        counts_reshaped = (
+            counts.reshape(1, num_bins)
+            if not counts.is_contiguous()
+            else counts.view(1, num_bins)
+        )
         return out / (counts_reshaped + 1e-8)
 
     @torch.no_grad()
@@ -516,7 +541,7 @@ def finalize_and_save(cluster_results: dict, user_map: dict):
         ys=cluster_results["ys"],
         labels=cluster_results["labels"],
         user_map=user_map,
-        color_map=FINAL_COLOR_MAP,
+        color_map=get_color_map(user_map),
         path=final_xy_path,
         title=f"Final Labeled Map for {file_path.stem}",
     )
