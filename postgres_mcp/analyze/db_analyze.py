@@ -24,10 +24,11 @@ from .class_base import (
     NTHETA,
     BATCH,
     MONTAGE_GRID,
-    FINAL_COLOR_MAP,
+    CATEGORIES,
     center_crop_cpu,
     preprocess_cpu_for_montage,
 )
+from .type_colors import get_color_map
 from ..sql import SafeSqlDriver
 
 # Override MONTAGE_GRID to create 4x4 grids (16 pictures) instead of default
@@ -136,7 +137,7 @@ def _do_clustering_sync(
     logger.info(f"      📁 Saved individual cluster images to: {individual_images_dir}")
 
     # Map clusters to semantic keys (cycle through available keys)
-    semantic_keys = list(FINAL_COLOR_MAP.keys())
+    semantic_keys = CATEGORIES
     user_map = {i: semantic_keys[i % len(semantic_keys)] for i in range(k_clusters)}
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +147,7 @@ def _do_clustering_sync(
         ys,
         labels_np,
         user_map,
-        FINAL_COLOR_MAP,
+        get_color_map(user_map),
         final_xy_path,
         title=f"{scan_name} K={k_clusters}",
     )
