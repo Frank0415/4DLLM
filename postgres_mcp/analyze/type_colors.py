@@ -10,6 +10,80 @@ COLOR_BORDERS = [
     (cnames["palegreen"], cnames["darkgreen"]),
 ]
 
+INITIALIZED_COLORS = [
+    [
+        "#74c0fc",
+        "#66d9e8",
+        "#4dabf7",
+        "#3bc9db",
+        "#339af0",
+        "#22b8cf",
+        "#228be6",
+        "#15aabf",
+        "#61b6fa",
+        "#51d1e2",
+        "#40a3f4",
+        "#2fc1d5",
+        "#2b93eb",
+        "#1cb1c7",
+        "#117cdc",
+        "#089caf",
+    ],
+    [
+        "#c0eb75",
+        "#b5e760",
+        "#8ce99a",
+        "#a9e34b",
+        "#7be28d",
+        "#9fde3c",
+        "#69db7c",
+        "#94d82d",
+        "#8bd126",
+        "#5dd571",
+        "#82c91e",
+        "#51cf66",
+        "#49c85f",
+        "#70ba0f",
+        "#40c057",
+        "#2fb148",
+    ],
+    [
+        "#ffd43b",
+        "#ffa94d",
+        "#fcc419",
+        "#ff922b",
+        "#fab005",
+        "#fd7e14",
+        "#f59f00",
+        "#f76707",
+        "#fecc2a",
+        "#ff9e3c",
+        "#fbba0f",
+        "#fe8820",
+        "#f8a803",
+        "#fa730e",
+        "#f08e00",
+        "#f15000",
+    ],
+    [
+        "#faa2c1",
+        "#f783ac",
+        "#ff8787",
+        "#f06595",
+        "#ff6b6b",
+        "#e64980",
+        "#fa5252",
+        "#f03e3e",
+        "#f892b6",
+        "#fb8599",
+        "#f7768e",
+        "#f76880",
+        "#f25a75",
+        "#f04d69",
+        "#f54848",
+        "#e62a2a",
+    ],
+]
 
 """
 # Two examples for TYPE_INFO
@@ -84,34 +158,38 @@ def generate_color_gradient(
 def process_type_info(
     borders: Dict[str, Dict[str, str]],
     is_subtype_only: bool = False,
+    use_initialized_color: bool = False,
 ) -> Dict[str, str]:
     """
     Process the TYPE_INFO to generate a color map and subtype labels.
     """
     color_map = {}
     subtype_cnt = 0
+    type_id = 0
     for type_name, info in borders.items():
         edge_start, edge_end = info["edgecolor"]
         subtypes = info["subtype"]
         type_num = len(subtypes)
         subtype_cnt += type_num
-        gradient_colors = generate_color_gradient(edge_start, edge_end, type_num)
+        if not use_initialized_color:
+            gradient_colors = generate_color_gradient(edge_start, edge_end, type_num)
+        else:
+            gradient_colors = INITIALIZED_COLORS[type_id]
         for i, subtype_name in enumerate(subtypes):
             label = subtype_name if is_subtype_only else f"{type_name}_{subtype_name}"
             color_map[label] = gradient_colors[i]
+        type_id += 1
 
     return color_map
 
 
-def get_type_info_from_user_map(
-    user_map: dict, color_borders: list = COLOR_BORDERS
-) -> dict:
+def get_type_info_from_user_map(user_map: dict) -> dict:
     type_info = {}
     type_cnt = 0
     for cluster_id, category in user_map.items():
         if category not in type_info:
             type_info[category] = {
-                "edgecolor": color_borders[type_cnt],
+                "edgecolor": COLOR_BORDERS[type_cnt],
                 "subtype": [str(cluster_id)],
             }
             type_cnt += 1
@@ -121,7 +199,9 @@ def get_type_info_from_user_map(
     return type_info
 
 
-def get_color_map(user_map: dict) -> dict:
+def get_color_map(user_map: dict, use_initialized_color: bool = True) -> dict:
     return process_type_info(
-        get_type_info_from_user_map(user_map), is_subtype_only=True
+        get_type_info_from_user_map(user_map),
+        is_subtype_only=True,
+        use_initialized_color=use_initialized_color,
     )
