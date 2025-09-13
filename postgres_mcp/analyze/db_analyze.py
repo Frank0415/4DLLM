@@ -5,6 +5,8 @@ from typing import Union, Dict, Any, List
 
 import numpy as np
 import scipy.io
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 # reuse clustering and plotting utilities from pre_class_v2
 from .class_base import (
@@ -23,8 +25,55 @@ from .class_base import (
     BATCH,
     MONTAGE_GRID,
     FINAL_COLOR_MAP,
+    center_crop_cpu,
+    preprocess_cpu_for_montage,
 )
 from ..sql import SafeSqlDriver
+
+# Override MONTAGE_GRID to create 4x4 grids (16 pictures) instead of default
+CLUSTER_MONTAGE_GRID = (4, 4)
+
+
+def save_individual_cluster_images(data_array, labels_np, min_d2_np, out_dir, images_per_cluster=16):
+    """
+    Save individual images for each cluster.
+    
+    Args:
+        data_array: Array of diffraction patterns
+        labels_np: Cluster labels for each pattern
+        min_d2_np: Distance to cluster center for each pattern
+        out_dir: Output directory for individual images
+        images_per_cluster: Number of individual images to save per cluster
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    uniq = sorted(np.unique(labels_np))
+    
+    for k in tqdm(uniq, desc="Saving individual cluster images"):
+        idxs = np.where(labels_np == k)[0]
+        if len(idxs) == 0:
+            continue
+            
+        # Sort by distance to cluster center (best representatives first)
+        order = np.argsort(min_d2_np[idxs])
+        # Take the best images (up to images_per_cluster)
+        take = idxs[order[:images_per_cluster]] if len(order) >= images_per_cluster else idxs[order]
+        
+        # Create a directory for this cluster's individual images
+        cluster_dir = out_dir / f"cluster_{k}"
+        cluster_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save each individual image
+        for i, idx in enumerate(take):
+            img = center_crop_cpu(data_array[idx], 224)
+            img = preprocess_cpu_for_montage(img)
+            
+            # Save as individual image
+            plt.figure(figsize=(2.24, 2.24), dpi=100)  # 224x224 pixels
+            plt.imshow(img, cmap="gray", vmin=0.0, vmax=1.0)
+            plt.axis("off")
+            plt.tight_layout(pad=0)
+            plt.savefig(cluster_dir / f"individual_{i:03d}.png", bbox_inches="tight", pad_inches=0)
+            plt.close()
 
 
 async def _load_mat_async(path: str) -> np.ndarray:
@@ -76,8 +125,15 @@ def _do_clustering_sync(
     logger.info("   🖼️ STEP 6: Generating visualization outputs...")
     out_dir = Path(out_root) / scan_name
     montage_dir = out_dir / "montages"
-    save_cluster_montages(data, labels_np, min_d2_np, montage_dir, grid=MONTAGE_GRID)
+    
+    # Save cluster montages with 4x4 grid (16 pictures)
+    save_cluster_montages(data, labels_np, min_d2_np, montage_dir, grid=CLUSTER_MONTAGE_GRID)
     logger.info(f"      📁 Saved cluster montages to: {montage_dir}")
+
+    # Save individual images for each cluster
+    individual_images_dir = out_dir / "individual_images"
+    save_individual_cluster_images(data, labels_np, min_d2_np, individual_images_dir, images_per_cluster=16)
+    logger.info(f"      📁 Saved individual cluster images to: {individual_images_dir}")
 
     # Map clusters to semantic keys (cycle through available keys)
     semantic_keys = list(FINAL_COLOR_MAP.keys())
@@ -103,6 +159,7 @@ def _do_clustering_sync(
     return {
         "out_dir": str(out_dir),
         "montage_dir": str(montage_dir),
+        "individual_images_dir": str(individual_images_dir),
         "xy_map": str(final_xy_path),
         "npz": str(npz_path),
         "k": int(k_clusters),
