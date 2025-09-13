@@ -221,3 +221,5 @@ postgres_mcp/database.json
 config/database.json
 config/db_config.json
 postgres_mcp/to_be_changed.md
+simulation.py
+cif_files
