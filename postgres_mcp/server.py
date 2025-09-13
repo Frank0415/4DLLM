@@ -7,15 +7,17 @@ import signal
 import sys
 import shutil
 import scipy.io
+import numpy as np
 from enum import Enum
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Union
 from .config import ConfigManager
+from PIL import Image as pil_Image
 
 import mcp.types as types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context, Image
 from pydantic import Field
 from pydantic import validate_call
 
@@ -37,6 +39,7 @@ from .sql import obfuscate_password
 from .top_queries import TopQueriesCalc
 from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
+from .mcp_images.mcp_image import fetch_images
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -973,3 +976,101 @@ async def get_scan_details(
         )
         return format_error_response(str(e))
 
+
+def preprocess_image(img, top_percent=0.5, eps=1e-8, crop_size=224):
+    """
+    从中心裁剪到 crop_size × crop_size，
+    然后去掉最亮 top_percent 百分比的像素，
+    再归一到 [0,1]
+    """
+    img = img.astype(np.float32)
+
+    # 中心裁剪
+    H, W = img.shape
+    ch = crop_size // 2
+    center_row = H // 2
+    center_col = W // 2
+    img_cropped = img[
+        max(center_row - ch, 0) : min(center_row + ch, H),
+        max(center_col - ch, 0) : min(center_col + ch, W),
+    ]
+
+    # 如果裁出来不足 crop_size，再补零（padding）
+    if img_cropped.shape[0] != crop_size or img_cropped.shape[1] != crop_size:
+        padded = np.zeros((crop_size, crop_size), dtype=img.dtype)
+        h, w = img_cropped.shape
+        padded[:h, :w] = img_cropped
+        img_cropped = padded
+
+    # 再做 top_percent 剪切
+    if top_percent > 0:
+        threshold = np.percentile(img_cropped, 100 - top_percent)
+        img_cropped = np.clip(img_cropped, None, threshold)
+
+    mn, mx = img_cropped.min(), img_cropped.max()
+    img_cropped = (img_cropped - mn) / (mx - mn + eps)
+
+    return img_cropped
+
+
+def extract_image_from_mat_file(
+    mat_file_path: str, image_in_mat: int, group_number: int, output_path: str
+):
+    mat_data = scipy.io.loadmat(mat_file_path)
+    data = mat_data["data"]
+    image = data[image_in_mat - 1]
+    image = preprocess_image(image)
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(os.path.join(output_path, str(group_number)), exist_ok=True)
+    output_filename = os.path.join(
+        output_path, str(group_number), f"image_{image_in_mat}.png"
+    )
+    img_uint8 = (image * 255).astype(np.uint8)
+    pil_img = pil_Image.fromarray(img_uint8)
+    pil_img.save(output_filename)
+    return str(output_filename)
+
+
+@mcp.tool(
+    description="Show a specified raw image from the database based on its ID and its group id."
+)
+async def show_raw_image(image_in_mat: int, mat_number: int, scan_id:int, ctx: Context) -> Image:
+    """
+    Retrieves a single image and display it to user based on the provided scan ID and matrix number and group id.
+    
+    For example, if the user wants to see image 5 from the 10.mat file of scan ID 2, you should provide:
+    image_in_mat=5, mat_number=10, scan_id=2.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Use parameterized query to get the file path
+        rows = await SafeSqlDriver.execute_param_query(
+            sql_driver,
+            "SELECT file_path FROM raw_mat_files WHERE scan_id = {} AND row_index = {};",
+            [scan_id, mat_number],  # Using 1 as hardcoded scan_id as in original code
+        )
+
+        if not rows:
+            raise Exception(
+                f"No mat file found for scan_id=1 and row_index={mat_number}"
+            )
+
+        mat_file_path = rows[0].cells["file_path"]
+
+        if not os.path.exists(mat_file_path):
+            raise Exception(f"Mat file does not exist: {mat_file_path}")
+
+        image_dir = os.path.join(
+            str(os.path.dirname(mat_file_path)), "..", "extracted_images"
+        )
+        image_path = extract_image_from_mat_file(
+            mat_file_path, image_in_mat, mat_number, image_dir
+        )
+        image_path = str.replace(image_path, "\\", "/")
+        image_data = (await fetch_images([image_path], ctx))[0]
+        return image_data
+
+    except Exception as e:
+        logger.error(f"Error showing raw image: {e}")
+        raise e
