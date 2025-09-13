@@ -25,7 +25,7 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 
-from type_colors import get_color_map
+from .type_colors import get_color_map
 
 # =========================
 #           CONFIG
@@ -110,9 +110,7 @@ def xy_plot_final(xs, ys, labels, user_map, color_map, path: Path, title: str):
                 xs[mask],
                 s=6,
                 alpha=0.9,
-                label=user_map[int(label_name)]
-                + "_"
-                + str(type_members_list[int(label_name)][1]),
+                label=f"{user_map[int(label_name)]}_{type_members_list[int(label_name)][1]}",
                 color=color,
             )
     ax.set_aspect("equal", adjustable="box")
@@ -124,7 +122,7 @@ def xy_plot_final(xs, ys, labels, user_map, color_map, path: Path, title: str):
     plt.legend(markerscale=3, fontsize=10, frameon=True, bbox_to_anchor=(1.01, 1))
     plt.title(title)
     plt.tight_layout()
-    plt.savefig(path)
+    plt.savefig(path, bbox_inches="tight")
     plt.close()
 
 

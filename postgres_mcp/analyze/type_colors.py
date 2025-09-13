@@ -134,7 +134,7 @@ def generate_color_gradient(
     Generate a list of colors forming a gradient between color_head and color_tail.
     """
     if color_cnt < 1:
-        raise Exception("Color count too small")
+        raise Exception(f"Color count must be at least 1, got: {color_cnt}")
     if color_cnt == 1:
         return [color_head]
 
@@ -142,7 +142,7 @@ def generate_color_gradient(
         start_rgb = tuple(int(color_head.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
         end_rgb = tuple(int(color_tail.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
     except Exception:
-        raise Exception("Invalid color format")
+        raise Exception("Invalid hex color format. Expected format: #RRGGBB")
 
     colors = []
     for i in range(color_cnt):
