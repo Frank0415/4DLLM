@@ -4,5 +4,5 @@
     "your-api-key-2"
   ],
   "base_url": "https://api.proxy.org/google",
-  "model": "gemini-114514"
+  "model": "model-name"
 }

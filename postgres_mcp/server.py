@@ -29,6 +29,7 @@ from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
 from .lock_manager import LockManager
 from .cif_analysis import CIFManager, PatternSimulator, PatternComparator
+from .llm_analysis import AnalysisPipeline
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -1196,6 +1197,450 @@ async def list_cif_files() -> ResponseType:
     except Exception as e:
         logger.error(f"Failed to list CIF files: {e}")
         return format_error_response(f"Failed to list CIF files: {str(e)}")
+
+
+# ========================================================================
+# LLM Analysis Tools
+# ========================================================================
+
+
+@mcp.tool(
+    description="Run LLM-based analysis on clustered 4D-STEM diffraction patterns for a specific scan"
+)
+async def run_llm_cluster_analysis(
+    scan_name: str = Field(description="Name of the scan to analyze"),
+    cluster_id: int = Field(
+        default=None,
+        description="Optional specific cluster ID to analyze (if not provided, analyzes all clusters)",
+    ),
+    max_patterns_per_cluster: int = Field(
+        default=5, description="Maximum number of patterns to analyze per cluster"
+    ),
+    batch_size: int = Field(
+        default=3, description="Number of patterns to process in parallel batches"
+    ),
+) -> ResponseType:
+    """
+    Run complete LLM analysis pipeline on clustered diffraction patterns.
+    This tool uses a generic LLM API to analyze diffraction patterns and identify phases/structures.
+    """
+    try:
+        # Get SQL driver
+        sql_driver = await get_sql_driver()
+
+        # Load API keys from configuration
+        config_manager = ConfigManager()
+        api_keys_config = config_manager.get_api_keys()
+
+        if not api_keys_config or "api_keys" not in api_keys_config:
+            return format_error_response(
+                "API keys not found in configuration. "
+                "Please ensure api_keys.json contains 'api_keys' list."
+            )
+
+        api_keys = api_keys_config["api_keys"]
+        if not isinstance(api_keys, list) or not api_keys:
+            return format_error_response(
+                "API keys must be provided as a non-empty list in api_keys.json"
+            )
+
+        # Get base URL and model from config, with defaults
+        base_url = api_keys_config.get(
+            "base_url", "https://api.example.com"
+        )
+        model = api_keys_config.get("model", "default-model")
+
+        # Initialize analysis pipeline
+        pipeline = AnalysisPipeline(sql_driver, api_keys, base_url, model)
+
+        # Run the analysis
+        logger.info(f"Starting LLM analysis for scan: {scan_name}")
+        results = await pipeline.analyze_scan_clusters(
+            scan_name=scan_name,
+            cluster_id=cluster_id,
+            max_patterns_per_cluster=max_patterns_per_cluster,
+            batch_size=batch_size,
+        )
+
+        # Format results for display
+        if results["status"] == "error":
+            return format_error_response(f"Analysis failed: {results['message']}")
+
+        result_lines = [
+            f"LLM Analysis Results for Scan: {scan_name}",
+            "=" * 60,
+            f"Status: {results['status']}",
+            f"Duration: {results.get('duration_seconds', 0):.1f} seconds",
+            f"Clusters Analyzed: {results['clusters_analyzed']}",
+            f"Total Patterns Analyzed: {results['total_patterns_analyzed']}",
+            "",
+        ]
+
+        if results.get("errors"):
+            result_lines.extend(
+                [
+                    "Errors Encountered:",
+                    "-" * 20,
+                ]
+            )
+            for error in results["errors"]:
+                result_lines.append(f"  • {error}")
+            result_lines.append("")
+
+        # Show sample results from each cluster
+        if results.get("cluster_results"):
+            result_lines.extend(
+                [
+                    "Cluster Analysis Summary:",
+                    "-" * 30,
+                ]
+            )
+
+            for cluster_id, cluster_result in results["cluster_results"].items():
+                if cluster_result["status"] == "success":
+                    sample_analysis = cluster_result.get("sample_analysis", {})
+                    result_lines.extend(
+                        [
+                            f"Cluster {cluster_id}:",
+                            f"  Patterns: {cluster_result['patterns_analyzed']}",
+                            f"  Success Rate: {cluster_result['successful_analyses']}/{cluster_result['patterns_analyzed']}",
+                            f"  Phase Type: {sample_analysis.get('phase_type', 'Unknown')}",
+                            f"  Quality: {sample_analysis.get('quality', 'Unknown')}",
+                            "",
+                        ]
+                    )
+                else:
+                    result_lines.extend(
+                        [
+                            f"Cluster {cluster_id}: FAILED",
+                            f"  Error: {cluster_result.get('message', 'Unknown error')}",
+                            "",
+                        ]
+                    )
+
+        result_lines.extend(
+            [
+                "",
+                "Note: Detailed analysis results have been saved to the database.",
+                "Use 'get_llm_analysis_summary' to view comprehensive results.",
+            ]
+        )
+
+        return format_text_response("\n".join(result_lines))
+
+    except Exception as e:
+        logger.error(f"LLM analysis failed: {e}")
+        return format_error_response(f"LLM analysis failed: {str(e)}")
+
+
+@mcp.tool(description="Get a summary of all LLM analyses performed on a scan")
+async def get_llm_analysis_summary(
+    scan_name: str = Field(description="Name of the scan to get analysis summary for"),
+) -> ResponseType:
+    """
+    Retrieve a comprehensive summary of all LLM analyses performed on a scan's clusters.
+    """
+    try:
+        # Get SQL driver
+        sql_driver = await get_sql_driver()
+
+        # Load API keys (just for pipeline initialization, won't be used for this read operation)
+        config_manager = ConfigManager()
+        api_keys_config = config_manager.get_api_keys()
+
+        if api_keys_config:
+            api_keys_list = api_keys_config.get("api_keys", ["dummy"])
+            base_url = api_keys_config.get(
+                "base_url", "https://api.example.com"
+            )
+            model = api_keys_config.get("model", "default-model")
+        else:
+            # Dummy values for read operations that don't need actual API calls
+            api_keys_list = ["dummy"]
+            base_url = "https://api.example.com"
+            model = "default-model"
+
+        # Initialize pipeline to use its summary method
+        pipeline = AnalysisPipeline(sql_driver, api_keys_list, base_url, model)
+
+        # Get analysis summary
+        summary = await pipeline.get_analysis_summary(scan_name)
+
+        if "error" in summary:
+            return format_error_response(
+                f"Failed to get analysis summary: {summary['error']}"
+            )
+
+        if summary["total_clusters_analyzed"] == 0:
+            return format_text_response(f"No LLM analyses found for scan: {scan_name}")
+
+        # Format summary for display
+        result_lines = [
+            f"LLM Analysis Summary for Scan: {scan_name}",
+            "=" * 60,
+            f"Total Clusters Analyzed: {summary['total_clusters_analyzed']}",
+            "",
+            "Detailed Results:",
+            "-" * 20,
+        ]
+
+        for analysis in summary["analyses"]:
+            result_lines.extend(
+                [
+                    f"Analysis ID: {analysis['analysis_id']}",
+                    f"  Cluster ID: {analysis['cluster_id']}",
+                    f"  Representative Patterns: {analysis['representative_patterns_count']}",
+                    f"  Total Patterns in Cluster: {analysis['total_patterns_in_cluster']}",
+                    f"  LLM Classification: {analysis['llm_assigned_class']}",
+                    f"  Analysis Date: {analysis['created_at']}",
+                    "",
+                ]
+            )
+
+        return format_text_response("\n".join(result_lines))
+
+    except Exception as e:
+        logger.error(f"Failed to get LLM analysis summary: {e}")
+        return format_error_response(f"Failed to get analysis summary: {str(e)}")
+
+@mcp.tool(
+    description="List and inspect JSON analysis results from batch image processing"
+)
+async def list_json_analysis_results(
+    results_folder: str = Field(
+        default="/tmp/results_llm",
+        description="Folder containing JSON analysis results",
+    ),
+    show_details: bool = Field(
+        default=False, description="Show detailed content of each JSON file"
+    ),
+) -> ResponseType:
+    """
+    List and optionally show details of JSON analysis results generated by batch image processing.
+    """
+    try:
+        import json
+        from pathlib import Path
+        from datetime import datetime
+
+        results_path = Path(results_folder)
+
+        if not results_path.exists():
+            return format_text_response(f"Results folder not found: {results_folder}")
+
+        # Find JSON files
+        json_files = list(results_path.glob("*_analysis.json"))
+
+        if not json_files:
+            return format_text_response(
+                f"No analysis JSON files found in {results_folder}"
+            )
+
+        # Sort by modification time (newest first)
+        json_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+        result_lines = [
+            f"JSON Analysis Results in {results_folder}",
+            "=" * 60,
+            f"Total Files: {len(json_files)}",
+            "",
+        ]
+
+        successful_analyses = 0
+        failed_analyses = 0
+
+        for json_file in json_files:
+            try:
+                # Read JSON content
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                status = data.get("status", "unknown")
+                image_name = Path(data.get("image_file", "unknown")).name
+
+                if status == "success":
+                    successful_analyses += 1
+                    status_icon = "✓"
+                else:
+                    failed_analyses += 1
+                    status_icon = "✗"
+
+                # Basic file info
+                file_size = json_file.stat().st_size
+                mod_time_timestamp = json_file.stat().st_mtime
+                mod_time = datetime.fromtimestamp(mod_time_timestamp).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
+                result_lines.extend(
+                    [
+                        f"{status_icon} {json_file.name}",
+                        f"  Image: {image_name}",
+                        f"  Status: {status}",
+                        f"  Size: {file_size} bytes",
+                        f"  Modified: {mod_time}",
+                    ]
+                )
+
+                if show_details and status == "success":
+                    analysis = data.get("analysis", {})
+                    result_lines.extend(
+                        [
+                            f"  Classification: {analysis.get('image_classification', 'N/A')}",
+                            f"  Confidence: {analysis.get('confidence', 'N/A')}",
+                            f"  Content: {analysis.get('content_description', 'N/A')[:100]}...",
+                        ]
+                    )
+                elif show_details and status == "error":
+                    result_lines.append(
+                        f"  Error: {data.get('error', 'Unknown error')}"
+                    )
+
+                result_lines.append("")
+
+            except Exception as e:
+                result_lines.extend(
+                    [
+                        f"✗ {json_file.name} (READ ERROR)",
+                        f"  Error reading file: {str(e)}",
+                        "",
+                    ]
+                )
+                failed_analyses += 1
+
+        # Add summary
+        result_lines.extend(
+            [
+                "Summary:",
+                "-" * 20,
+                f"Successful Analyses: {successful_analyses}",
+                f"Failed Analyses: {failed_analyses}",
+                f"Total Files: {len(json_files)}",
+            ]
+        )
+
+        if not show_details:
+            result_lines.extend(
+                ["", "Use show_details=True to see analysis content for each file."]
+            )
+
+        return format_text_response("\n".join(result_lines))
+
+    except Exception as e:
+        logger.error(f"Failed to list JSON results: {e}")
+        return format_error_response(f"Failed to list JSON results: {str(e)}")
+
+
+@mcp.tool(description="Get detailed LLM analysis results for a specific cluster")
+async def get_cluster_llm_details(
+    scan_name: str = Field(description="Name of the scan"),
+    cluster_id: int = Field(
+        description="ID of the cluster to get detailed results for"
+    ),
+) -> ResponseType:
+    """
+    Get detailed LLM analysis results and individual pattern analyses for a specific cluster.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Get detailed analysis for the cluster
+        detail_sql = """
+            SELECT la.id, la.cluster_id, la.representative_patterns_count,
+                   la.llm_assigned_class, la.llm_detailed_features, la.analysis_timestamp,
+                   COUNT(dp.id) as total_patterns_in_cluster
+            FROM llm_analyses la
+            JOIN diffraction_patterns dp ON la.cluster_id = dp.cluster_label
+            JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id
+            JOIN scans s ON rmf.scan_id = s.id
+            WHERE s.scan_name = %s AND la.cluster_id = %s
+            GROUP BY la.id, la.cluster_id, la.representative_patterns_count,
+                     la.llm_assigned_class, la.llm_detailed_features, la.analysis_timestamp;
+        """
+
+        result = await sql_driver.execute_query(detail_sql, [scan_name, cluster_id])
+
+        if not result:
+            return format_text_response(
+                f"No LLM analysis found for cluster {cluster_id} in scan {scan_name}"
+            )
+
+        analysis = result[0].cells
+
+        # Parse detailed features if available
+        import json
+
+        detailed_features = {}
+        try:
+            if analysis["llm_detailed_features"]:
+                detailed_features = json.loads(analysis["llm_detailed_features"])
+        except Exception:
+            pass
+
+        # Format detailed results
+        result_lines = [
+            f"Detailed LLM Analysis for Cluster {cluster_id}",
+            "=" * 60,
+            f"Scan: {scan_name}",
+            f"Analysis ID: {analysis['id']}",
+            f"Analysis Date: {analysis['analysis_timestamp']}",
+            f"Representative Patterns Analyzed: {analysis['representative_patterns_count']}",
+            f"Total Patterns in Cluster: {analysis['total_patterns_in_cluster']}",
+            "",
+            "LLM Classification Results:",
+            "-" * 30,
+            f"Phase Type: {analysis['llm_assigned_class']}",
+            "",
+        ]
+
+        if detailed_features:
+            result_lines.extend(
+                [
+                    "Detailed Analysis Features:",
+                    "-" * 30,
+                ]
+            )
+            for key, value in detailed_features.items():
+                if key != "phase_type":  # Already shown above
+                    result_lines.append(f"{key.replace('_', ' ').title()}: {value}")
+            result_lines.append("")
+
+        # Get representative patterns used in analysis
+        rep_patterns_sql = """
+            SELECT lrp.pattern_id, lrp.selection_reason, rmf.row_index, dp.col_index
+            FROM llm_representative_patterns lrp
+            JOIN llm_analyses la ON lrp.analysis_id = la.id
+            JOIN diffraction_patterns dp ON lrp.pattern_id = dp.id
+            JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id
+            JOIN scans s ON rmf.scan_id = s.id
+            WHERE s.scan_name = %s AND la.cluster_id = %s
+            ORDER BY rmf.row_index, dp.col_index;
+        """
+
+        rep_result = await sql_driver.execute_query(
+            rep_patterns_sql, [scan_name, cluster_id]
+        )
+
+        if rep_result:
+            result_lines.extend(
+                [
+                    "Representative Patterns Used:",
+                    "-" * 30,
+                ]
+            )
+            for rep_pattern in rep_result:
+                result_lines.append(
+                    f"Pattern ID {rep_pattern.cells['pattern_id']}: "
+                    f"Row {rep_pattern.cells['row_index']}, "
+                    f"Col {rep_pattern.cells['col_index']} "
+                    f"({rep_pattern.cells['selection_reason']})"
+                )
+
+        return format_text_response("\n".join(result_lines))
+
+    except Exception as e:
+        logger.error(f"Failed to get cluster LLM details: {e}")
+        return format_error_response(f"Failed to get cluster details: {str(e)}")
 
 
 if __name__ == "__main__":
