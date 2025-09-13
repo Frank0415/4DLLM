@@ -192,6 +192,8 @@ Examples:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
+    
+    
 
     # Set logging level
     if args.verbose:
