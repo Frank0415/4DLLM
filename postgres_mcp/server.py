@@ -10,6 +10,7 @@ import scipy.io
 import subprocess
 import time
 import uuid
+import torch
 from enum import Enum
 from typing import Any
 from typing import List
@@ -564,11 +565,6 @@ async def analyze_scan_tool(
     k_clusters: int = Field(
         description="Number of clusters for k-means clustering.", default=16
     ),
-    seed: int = Field(description="Random seed for reproducibility.", default=0),
-    device: str = Field(
-        description="Torch device string (e.g., 'cpu', 'cuda') or None to auto-detect.",
-        default=None,
-    ),
 ) -> ResponseType:
     """
     Analyze a 4D-STEM scan using clustering and generate visualization outputs.
@@ -583,6 +579,7 @@ async def analyze_scan_tool(
 
     Returns paths to generated outputs including montages, XY maps, and cluster data.
     """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
         sql_driver = await get_sql_driver()
         result = await analyze_scan(
@@ -590,7 +587,7 @@ async def analyze_scan_tool(
             scan_identifier=scan_identifier,
             out_root=out_root,
             k_clusters=k_clusters,
-            seed=seed,
+            seed=0,
             device=device,
         )
         return format_text_response(result)
@@ -962,7 +959,7 @@ async def get_scan_details(
         mat_files_list = [row.cells for row in rows]
 
         # 为了提供更丰富的上下文，我们同时返回扫描的基本信息
-        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = %s;"
+        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = {{}};"
         scan_info_rows = await SafeSqlDriver.execute_param_query(
             sql_driver, scan_info_query, [param]
         )
@@ -979,13 +976,11 @@ async def get_scan_details(
         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Check the status of background analysis jobs."
-)
+@mcp.tool(description="Check the status of background analysis jobs.")
 async def check_analysis_status() -> ResponseType:
     """
     Check the status of background analysis jobs.
-    
+
     Returns information about currently running analysis tasks or indicates
     that no analysis is currently running.
     """
@@ -998,28 +993,34 @@ async def check_analysis_status() -> ResponseType:
                 job_id = lock_info.get("job_id", "unknown")
                 scan_identifier = lock_info.get("scan_identifier", "unknown")
                 timestamp = lock_info.get("timestamp", 0)
-                
+
                 # Format the start time
                 import datetime
-                start_time = datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                
+
+                start_time = datetime.datetime.fromtimestamp(timestamp).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
                 # Check log file for progress
                 import os
+
                 log_dir = "/tmp/4dllm_logs"
                 log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
                 progress_info = ""
-                
+
                 if os.path.exists(log_file):
                     # Read last few lines of the log file for progress
                     try:
-                        with open(log_file, 'r') as f:
+                        with open(log_file, "r") as f:
                             lines = f.readlines()
                             # Get last 10 lines
                             last_lines = lines[-10:] if len(lines) > 10 else lines
-                            progress_info = "\nRecent log entries:\n" + "".join(last_lines)
+                            progress_info = "\nRecent log entries:\n" + "".join(
+                                last_lines
+                            )
                     except Exception as e:
                         progress_info = f"\nCould not read log file: {e}"
-                
+
                 status_msg = (
                     f"Analysis job is currently running:\n"
                     f"- Job ID: {job_id}\n"
@@ -1029,43 +1030,44 @@ async def check_analysis_status() -> ResponseType:
                     f"- Log file: {log_file}"
                     f"{progress_info}"
                 )
-                
+
                 return format_text_response(status_msg)
             else:
-                return format_text_response("System is locked, but no job information available.")
+                return format_text_response(
+                    "System is locked, but no job information available."
+                )
         else:
             return format_text_response("No analysis jobs are currently running.")
-            
+
     except Exception as e:
         logger.error(f"Error checking analysis status: {e}", exc_info=True)
         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Get detailed progress log for a specific analysis job."
-)
+@mcp.tool(description="Get detailed progress log for a specific analysis job.")
 async def get_analysis_log(
-    job_id: str = Field(description="Job ID of the analysis task")
+    job_id: str = Field(description="Job ID of the analysis task"),
 ) -> ResponseType:
     """
     Get detailed progress log for a specific analysis job.
-    
+
     Returns the full log content for the specified job ID.
     """
     try:
         import os
+
         log_dir = "/tmp/4dllm_logs"
         log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
-        
+
         if not os.path.exists(log_file):
             return format_error_response(f"Log file not found for job ID: {job_id}")
-        
+
         # Read the log file
-        with open(log_file, 'r') as f:
+        with open(log_file, "r") as f:
             log_content = f.read()
-        
+
         return format_text_response(f"Log content for job {job_id}:\n\n{log_content}")
-        
+
     except Exception as e:
         logger.error(f"Error reading log for job {job_id}: {e}", exc_info=True)
         return format_error_response(str(e))
