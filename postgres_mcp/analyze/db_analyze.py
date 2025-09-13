@@ -46,6 +46,7 @@ def _do_clustering_sync(
     import torch
 
     device = device_str or ("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
 
     extractor = GPUExtractor(
         device, NBINS, HARMONICS, RAD_BANDS, CENTER_MASK_RADIUS, RMAX, NTHETA, BATCH
@@ -128,7 +129,7 @@ async def analyze_scan(
             rmf.file_path
         FROM raw_mat_files rmf
         JOIN scans s ON rmf.scan_id = s.id
-        WHERE {condition_column} = %s
+        WHERE {condition_column} = {{}}
         ORDER BY rmf.row_index ASC;
     """
 

@@ -10,6 +10,7 @@ import scipy.io
 import subprocess
 import time
 import uuid
+import torch
 from enum import Enum
 from typing import Any
 from typing import List
@@ -565,11 +566,6 @@ async def analyze_scan_tool(
     k_clusters: int = Field(
         description="Number of clusters for k-means clustering.", default=16
     ),
-    seed: int = Field(description="Random seed for reproducibility.", default=0),
-    device: str = Field(
-        description="Torch device string (e.g., 'cpu', 'cuda') or None to auto-detect.",
-        default=None,
-    ),
 ) -> ResponseType:
     """
     Analyze a 4D-STEM scan using clustering and generate visualization outputs.
@@ -584,6 +580,7 @@ async def analyze_scan_tool(
 
     Returns paths to generated outputs including montages, XY maps, and cluster data.
     """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
         sql_driver = await get_sql_driver()
         result = await analyze_scan(
@@ -591,7 +588,7 @@ async def analyze_scan_tool(
             scan_identifier=scan_identifier,
             out_root=out_root,
             k_clusters=k_clusters,
-            seed=seed,
+            seed=0,
             device=device,
         )
         return format_text_response(result)
@@ -963,7 +960,7 @@ async def get_scan_details(
         mat_files_list = [row.cells for row in rows]
 
         # 为了提供更丰富的上下文，我们同时返回扫描的基本信息
-        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = %s;"
+        scan_info_query = f"SELECT id, scan_name, folder_path FROM scans WHERE {condition_column} = {{}};"
         scan_info_rows = await SafeSqlDriver.execute_param_query(
             sql_driver, scan_info_query, [param]
         )
@@ -980,6 +977,7 @@ async def get_scan_details(
         return format_error_response(str(e))
 
 
+@mcp.tool(description="Check the status of background analysis jobs.")
 @mcp.tool(description="Check the status of background analysis jobs.")
 async def check_analysis_status() -> ResponseType:
     """
