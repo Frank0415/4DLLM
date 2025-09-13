@@ -27,6 +27,7 @@ from .sql import obfuscate_password
 from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
 from .lock_manager import LockManager
+from .cif_analysis import CIFManager, PatternSimulator, PatternComparator
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -979,13 +980,11 @@ async def get_scan_details(
         return format_error_response(str(e))
 
 
-@mcp.tool(
-    description="Check the status of background analysis jobs."
-)
+@mcp.tool(description="Check the status of background analysis jobs.")
 async def check_analysis_status() -> ResponseType:
     """
     Check the status of background analysis jobs.
-    
+
     Returns information about currently running analysis tasks or indicates
     that no analysis is currently running.
     """
@@ -998,28 +997,34 @@ async def check_analysis_status() -> ResponseType:
                 job_id = lock_info.get("job_id", "unknown")
                 scan_identifier = lock_info.get("scan_identifier", "unknown")
                 timestamp = lock_info.get("timestamp", 0)
-                
+
                 # Format the start time
                 import datetime
-                start_time = datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                
+
+                start_time = datetime.datetime.fromtimestamp(timestamp).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
                 # Check log file for progress
                 import os
+
                 log_dir = "/tmp/4dllm_logs"
                 log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
                 progress_info = ""
-                
+
                 if os.path.exists(log_file):
                     # Read last few lines of the log file for progress
                     try:
-                        with open(log_file, 'r') as f:
+                        with open(log_file, "r") as f:
                             lines = f.readlines()
                             # Get last 10 lines
                             last_lines = lines[-10:] if len(lines) > 10 else lines
-                            progress_info = "\nRecent log entries:\n" + "".join(last_lines)
+                            progress_info = "\nRecent log entries:\n" + "".join(
+                                last_lines
+                            )
                     except Exception as e:
                         progress_info = f"\nCould not read log file: {e}"
-                
+
                 status_msg = (
                     f"Analysis job is currently running:\n"
                     f"- Job ID: {job_id}\n"
@@ -1029,43 +1034,172 @@ async def check_analysis_status() -> ResponseType:
                     f"- Log file: {log_file}"
                     f"{progress_info}"
                 )
-                
+
                 return format_text_response(status_msg)
             else:
-                return format_text_response("System is locked, but no job information available.")
+                return format_text_response(
+                    "System is locked, but no job information available."
+                )
         else:
             return format_text_response("No analysis jobs are currently running.")
-            
+
     except Exception as e:
         logger.error(f"Error checking analysis status: {e}", exc_info=True)
         return format_error_response(str(e))
 
 
 @mcp.tool(
-    description="Get detailed progress log for a specific analysis job."
+    description="Download a CIF file from a crystallography database and store it in the database"
 )
-async def get_analysis_log(
-    job_id: str = Field(description="Job ID of the analysis task")
+async def download_cif_file(
+    url: str = Field(description="The URL to download the CIF file from"),
 ) -> ResponseType:
     """
-    Get detailed progress log for a specific analysis job.
-    
-    Returns the full log content for the specified job ID.
+    Downloads a CIF file from a crystallography database and stores it in the database.
     """
     try:
-        import os
-        log_dir = "/tmp/4dllm_logs"
-        log_file = os.path.join(log_dir, f"analysis_{job_id}.log")
-        
-        if not os.path.exists(log_file):
-            return format_error_response(f"Log file not found for job ID: {job_id}")
-        
-        # Read the log file
-        with open(log_file, 'r') as f:
-            log_content = f.read()
-        
-        return format_text_response(f"Log content for job {job_id}:\n\n{log_content}")
-        
+        # Get SQL driver and create CIF manager
+        sql_driver = _unrestricted_driver  # Need unrestricted for INSERT operations
+        cif_manager = CIFManager(sql_driver)
+
+        # Download and process the CIF file
+        file_path = await cif_manager.download_cif(url)
+        cif_info = cif_manager.parse_cif(file_path)
+        cif_id = await cif_manager.store_cif_info(
+            os.path.basename(file_path), file_path, cif_info
+        )
+
+        return format_text_response(
+            f"Successfully downloaded and stored CIF file.\n"
+            f"- Database ID: {cif_id}\n"
+            f"- Filename: {os.path.basename(file_path)}\n"
+            f"- Crystal system: {cif_info.get('crystal_system', 'Unknown')}\n"
+            f"- Space group: {cif_info.get('space_group', 'Unknown')}"
+        )
+
     except Exception as e:
-        logger.error(f"Error reading log for job {job_id}: {e}", exc_info=True)
-        return format_error_response(str(e))
+        logger.error(f"Failed to download CIF file: {e}")
+        return format_error_response(f"Failed to download CIF file: {str(e)}")
+
+
+@mcp.tool(description="Upload a local CIF file and store it in the database")
+async def upload_cif_file(
+    file_path: str = Field(description="The absolute path to the local CIF file"),
+) -> ResponseType:
+    """
+    Uploads a local CIF file and stores it in the database.
+    """
+    try:
+        # Get SQL driver and create CIF manager
+        sql_driver = _unrestricted_driver  # Need unrestricted for INSERT operations
+        cif_manager = CIFManager(sql_driver)
+
+        # Upload and process the CIF file
+        dest_path = await cif_manager.upload_cif(file_path)
+        cif_info = cif_manager.parse_cif(dest_path)
+        cif_id = await cif_manager.store_cif_info(
+            os.path.basename(dest_path), dest_path, cif_info
+        )
+
+        return format_text_response(
+            f"Successfully uploaded and stored CIF file.\n"
+            f"- Database ID: {cif_id}\n"
+            f"- Filename: {os.path.basename(dest_path)}\n"
+            f"- Crystal system: {cif_info.get('crystal_system', 'Unknown')}\n"
+            f"- Space group: {cif_info.get('space_group', 'Unknown')}"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to upload CIF file: {e}")
+        return format_error_response(f"Failed to upload CIF file: {str(e)}")
+
+
+@mcp.tool(description="Generate simulated diffraction patterns from a CIF file")
+async def generate_simulated_patterns(
+    cif_id: int = Field(description="The database ID of the CIF file"),
+    count: int = Field(
+        description="Number of simulated patterns to generate", default=100
+    ),
+) -> ResponseType:
+    """
+    Generates simulated diffraction patterns from a CIF file.
+    """
+    try:
+        # Get SQL driver and create pattern simulator
+        sql_driver = _unrestricted_driver
+        simulator = PatternSimulator(sql_driver)
+
+        # Generate simulated patterns with correct parameter passing
+        result = await simulator.generate_patterns(cif_id, count=count)
+
+        return format_text_response(f"Simulation result for CIF ID {cif_id}: {result}")
+    except Exception as e:
+        logger.error(f"Failed to generate simulated patterns: {e}")
+        return format_error_response(f"Failed to generate simulated patterns: {str(e)}")
+
+
+@mcp.tool(
+    description="Compare experimental diffraction patterns with simulated patterns from a CIF file"
+)
+async def compare_patterns(
+    scan_id: int = Field(description="The database ID of the scan to compare"),
+    cif_id: int = Field(description="The database ID of the CIF file to compare with"),
+) -> ResponseType:
+    """
+    Compares experimental diffraction patterns with simulated patterns from a CIF file.
+    """
+    try:
+        # Get SQL driver and create pattern comparator
+        sql_driver = _unrestricted_driver
+        comparator = PatternComparator(sql_driver)
+
+        # Perform batch comparison
+        results = await comparator.batch_compare(scan_id, cif_id)
+
+        return format_text_response(
+            f"Comparison result for scan {scan_id} vs CIF {cif_id}: {results}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to compare patterns: {e}")
+        return format_error_response(f"Failed to compare patterns: {str(e)}")
+
+
+@mcp.tool(description="List all CIF files in the database")
+async def list_cif_files() -> ResponseType:
+    """
+    Lists all CIF files stored in the database.
+    """
+    try:
+        # Get SQL driver and create CIF manager
+        sql_driver = await get_sql_driver()
+        cif_manager = CIFManager(sql_driver)
+
+        # Get list of CIF files
+        cif_files = await cif_manager.list_cif_files()
+
+        # Format the results
+        if not cif_files:
+            return format_text_response("No CIF files found in the database.")
+
+        result_lines = ["CIF Files in Database:", "=" * 50]
+        for cif_file in cif_files:
+            result_lines.extend(
+                [
+                    f"ID: {cif_file['id']} - {cif_file['filename']}",
+                    f"  Crystal System: {cif_file['crystal_system'] or 'Unknown'}",
+                    f"  Space Group: {cif_file['space_group'] or 'Unknown'}",
+                    f"  Uploaded: {cif_file['uploaded_at']}",
+                    "",
+                ]
+            )
+
+        return format_text_response("\n".join(result_lines))
+
+    except Exception as e:
+        logger.error(f"Failed to list CIF files: {e}")
+        return format_error_response(f"Failed to list CIF files: {str(e)}")
+
+
+if __name__ == "__main__":
+    # This is the entry point when running the server directly
+    asyncio.run(main())
