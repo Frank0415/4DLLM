@@ -85,47 +85,6 @@ INITIALIZED_COLORS = [
     ],
 ]
 
-"""
-# Two examples for TYPE_INFO
-
-TYPE_INFO = {
-    "Empty": {
-        "edgecolor": (cnames["lightgrey"], cnames["dimgrey"]),
-        "subtype": ["sub1", "sub2", "sub3", "sub4"],
-    },
-    "Amorphous": {
-        "edgecolor": (cnames["lightcoral"], cnames["darkred"]),
-        "subtype": ["sub1", "sub2", "sub3", "sub4"],
-    },
-    "Crystalline": {
-        "edgecolor": (cnames["peachpuff"], cnames["saddlebrown"]),
-        "subtype": ["sub1", "sub2", "sub3", "sub4"],
-    },
-    "Mixing": {
-        "edgecolor": (cnames["palegreen"], cnames["darkgreen"]),
-        "subtype": ["sub1", "sub2", "sub3", "sub4"],
-    },
-}
-
-TYPE_INFO = {
-    "T0": {"edgecolor": ("#d3d3d3", "#d3d3d3"), "subtype": [""]},
-    "T1": {"edgecolor": ("#696969", "#696969"), "subtype": [""]},
-    "T2": {"edgecolor": ("#f08080", "#f08080"), "subtype": [""]},
-    "T3": {"edgecolor": ("#bd4040", "#bd4040"), "subtype": [""]},
-    "T4": {"edgecolor": ("#8b0000", "#8b0000"), "subtype": [""]},
-    "T5": {"edgecolor": ("#ffdab9", "#ffdab9"), "subtype": [""]},
-    "T6": {"edgecolor": ("#8b4513", "#8b4513"), "subtype": [""]},
-    "T7": {"edgecolor": ("#98fb98", "#98fb98"), "subtype": [""]},
-    "T8": {"edgecolor": ("#65c865", "#65c865"), "subtype": [""]},
-    "T9": {"edgecolor": ("#329632", "#329632"), "subtype": [""]},
-    "T10": {"edgecolor": ("#006400", "#006400"), "subtype": [""]},
-    "T11": {"edgecolor": ("#4169E1", "#4169E1"), "subtype": [""]},
-    "T12": {"edgecolor": ("#ee82ee", "#ee82ee"), "subtype": [""]},
-    "T13": {"edgecolor": ("#9c41B8", "#9c41B8"), "subtype": [""]},
-    "T14": {"edgecolor": ("#4b0082", "#4b0082"), "subtype": [""]},
-}
-"""
-
 
 def generate_color_gradient(
     color_head: str, color_tail: str, color_cnt: int
@@ -134,7 +93,7 @@ def generate_color_gradient(
     Generate a list of colors forming a gradient between color_head and color_tail.
     """
     if color_cnt < 1:
-        raise Exception(f"Color count must be at least 1, got: {color_cnt}")
+        raise ValueError(f"Color count must be at least 1, got: {color_cnt}")
     if color_cnt == 1:
         return [color_head]
 
@@ -142,7 +101,7 @@ def generate_color_gradient(
         start_rgb = tuple(int(color_head.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
         end_rgb = tuple(int(color_tail.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
     except Exception:
-        raise Exception("Invalid hex color format. Expected format: #RRGGBB")
+        raise ValueError("Invalid hex color format. Expected format: #RRGGBB")
 
     colors = []
     for i in range(color_cnt):
