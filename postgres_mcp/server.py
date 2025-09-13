@@ -7,15 +7,19 @@ import signal
 import sys
 import shutil
 import scipy.io
+import psycopg2
+import scipy.io
+import numpy as np
 from enum import Enum
 from typing import Any
 from typing import List
 from typing import Literal
 from typing import Union
 from .config import ConfigManager
+from PIL import Image as pil_Image
 
 import mcp.types as types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context, Image
 from pydantic import Field
 from pydantic import validate_call
 
@@ -37,6 +41,7 @@ from .sql import obfuscate_password
 from .top_queries import TopQueriesCalc
 from .analyze import analyze_scan
 from .import_4dstem import process_one_mib
+from .mcp_images.mcp_image import fetch_images
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -48,6 +53,14 @@ HYPOPG_EXTENSION = "hypopg"
 ResponseType = List[types.TextContent | types.ImageContent | types.EmbeddedResource]
 
 logger = logging.getLogger(__name__)
+
+DB_CONFIG = {
+    "dbname": "4dllm",
+    "user": "postgres",
+    "password": "1234",
+    "host": "localhost",
+    "port": "5432",
+}
 
 
 class AccessMode(str, Enum):
@@ -973,3 +986,79 @@ async def get_scan_details(
         )
         return format_error_response(str(e))
 
+
+def preprocess_image(img, top_percent=0.5, eps=1e-8, crop_size=224):
+    """
+    从中心裁剪到 crop_size × crop_size，
+    然后去掉最亮 top_percent 百分比的像素，
+    再归一到 [0,1]
+    """
+    img = img.astype(np.float32)
+
+    # 中心裁剪
+    H, W = img.shape
+    ch = crop_size // 2
+    center_row = H // 2
+    center_col = W // 2
+    img_cropped = img[
+        max(center_row - ch, 0) : min(center_row + ch, H),
+        max(center_col - ch, 0) : min(center_col + ch, W),
+    ]
+
+    # 如果裁出来不足 crop_size，再补零（padding）
+    if img_cropped.shape[0] != crop_size or img_cropped.shape[1] != crop_size:
+        padded = np.zeros((crop_size, crop_size), dtype=img.dtype)
+        h, w = img_cropped.shape
+        padded[:h, :w] = img_cropped
+        img_cropped = padded
+
+    # 再做 top_percent 剪切
+    if top_percent > 0:
+        threshold = np.percentile(img_cropped, 100 - top_percent)
+        img_cropped = np.clip(img_cropped, None, threshold)
+
+    mn, mx = img_cropped.min(), img_cropped.max()
+    img_cropped = (img_cropped - mn) / (mx - mn + eps)
+
+    return img_cropped
+
+
+def extract_image_from_mat_file(
+    mat_file_path: str, image_id: int, group_number: int, output_path: str
+):
+    mat_data = scipy.io.loadmat(mat_file_path)
+    data = mat_data["data"]
+    image = data[image_id - 1]
+    image = preprocess_image(image)
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(os.path.join(output_path, str(group_number)), exist_ok=True)
+    output_filename = os.path.join(
+        output_path, str(group_number), f"image_{image_id}.png"
+    )
+    img_uint8 = (image * 255).astype(np.uint8)
+    pil_img = pil_Image.fromarray(img_uint8)
+    pil_img.save(output_filename)
+    return str(output_filename)
+
+
+@mcp.tool(
+    description="Show a specified raw image from the database based on its ID and its group id."
+)
+async def show_raw_image(image_id: int, group_number: int, ctx: Context) -> Image:
+    sql_query = """SELECT file_path FROM raw_mat_files WHERE scan_id = '1' AND row_index = '%s';"""
+    with psycopg2.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql_query, (group_number,))
+            result = cursor.fetchone()
+            mat_file_path = result[0]
+            if os.path.exists(mat_file_path) is False:
+                raise Exception("!" + mat_file_path)
+            image_dir = os.path.join(
+                str(os.path.dirname(mat_file_path)), "..", "extracted_images"
+            )
+            image_path = extract_image_from_mat_file(
+                mat_file_path, image_id, group_number, image_dir
+            )
+            image_path = str.replace(image_path, "\\", "/")
+            image_data = (await fetch_images([image_path], ctx))[0]
+            return image_data
