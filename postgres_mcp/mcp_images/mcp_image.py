@@ -116,7 +116,7 @@ async def process_image_data(
                 else:
                     width, height = img.size
 
-                quality = 85
+                quality = 70
                 scale_factor = 1.0
 
                 while True:
@@ -142,8 +142,8 @@ async def process_image_data(
                     if scale_factor < 1.0 and hasattr(current_img, "close"):
                         current_img.close()
 
-                    # Target 800KB to leave buffer for any MCP overhead
-                    if len(processed_data) <= 819200:  # 800KB
+                    # Target 50KB to leave buffer for any MCP overhead
+                    if len(processed_data) <= 51200:  # 50KB
                         logger.debug(
                             f"Processed image dimensions from {image_source}: {current_width}x{current_height} (quality={quality})"
                         )
@@ -154,13 +154,13 @@ async def process_image_data(
 
                     # Try reducing quality first
                     if quality > 20:
-                        quality -= 10
+                        quality -= 20
                         logger.debug(
                             f"Reducing quality to {quality} for {image_source}, current size: {len(processed_data)} bytes"
                         )
                     else:
                         # Then try scaling down
-                        scale_factor *= 0.8
+                        scale_factor *= 0.5
                         if (
                             current_width * scale_factor < 200
                             or current_height * scale_factor < 200
@@ -175,7 +175,7 @@ async def process_image_data(
                         logger.debug(
                             f"Applying scale factor {scale_factor} to image from {image_source}"
                         )
-                        quality = 85  # Reset quality when changing size
+                        quality = 70  # Reset quality when changing size
         except MemoryError as e:
             ctx.error(f"Out of memory processing large image: {str(e)}")
             logger.error(f"MemoryError processing image from {image_source}: {str(e)}")
@@ -228,7 +228,7 @@ async def process_local_image(file_path: str, ctx: Context) -> Dict[str, Any]:
 
         # For large files, read and process directly without loading entire file into memory
         file_size = os.path.getsize(file_path)
-        if file_size > 1048576:
+        if file_size > 51200:
             logger.debug(f"Large local image detected: {file_path} ({file_size} bytes)")
             # Process the image directly using the same logic as for URL images
             return await process_large_local_image(file_path, content_type, ctx)
@@ -295,7 +295,7 @@ async def process_large_local_image(
             else:
                 width, height = img.size
 
-            quality = 75  # Start with lower quality for large images
+            quality = 60  # Start with lower quality for large images
             scale_factor = 1.0
 
             while True:
@@ -322,8 +322,8 @@ async def process_large_local_image(
                 if scale_factor < 1.0 and hasattr(current_img, "close"):
                     current_img.close()
 
-                # Target 800KB to leave buffer for any MCP overhead
-                if len(processed_data) <= 819200:  # 800KB
+                # Target 50KB to leave buffer for any MCP overhead
+                if len(processed_data) <= 51200:  # 50KB
                     logger.debug(
                         f"Successfully compressed large local image {file_path} to {len(processed_data)} bytes (quality={quality}, dimensions={current_width}x{current_height})"
                     )
@@ -334,11 +334,11 @@ async def process_large_local_image(
 
                 # Try reducing quality first
                 if quality > 30:
-                    quality -= 10
+                    quality -= 30
                     logger.debug(f"Reducing quality to {quality} for {file_path}")
                 else:
                     # Then try scaling down
-                    scale_factor *= 0.8
+                    scale_factor *= 0.5
                     if (
                         current_width * scale_factor < 200
                         or current_height * scale_factor < 200
@@ -351,7 +351,7 @@ async def process_large_local_image(
                     logger.debug(
                         f"Applying scale factor {scale_factor} to image {file_path}"
                     )
-                    quality = 85  # Reset quality when changing size
+                    quality = 70  # Reset quality when changing size
 
     except MemoryError as e:
         error_msg = f"Out of memory processing large local image {file_path}: {str(e)}"

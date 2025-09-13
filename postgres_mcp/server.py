@@ -7,9 +7,6 @@ import signal
 import sys
 import shutil
 import scipy.io
-import subprocess
-import time
-import uuid
 import torch
 import numpy as np
 from enum import Enum
@@ -557,9 +554,10 @@ async def execute_sql(
 
 
 @mcp.tool(
-    description="Run clustering analysis on a 4D-STEM scan stored in the database. This performs feature extraction, PCA, k-means clustering, and generates montages and XY maps."
+    description="Run clustering analysis on a 4D-STEM scan stored in the database. This performs feature extraction, PCA, k-means clustering, and generates montages and XY maps. Also stores cluster assignments in the database for LLM analysis."
 )
 async def analyze_scan_tool(
+    ctx: Context,
     scan_identifier: Union[int, str] = Field(
         description="The unique ID (integer) or name (string) of the scan to analyze."
     ),
@@ -581,12 +579,62 @@ async def analyze_scan_tool(
     4. Runs k-means clustering
     5. Generates cluster montages and XY maps
     6. Saves results to the specified output directory
+    7. Stores cluster assignments in the database (diffraction_patterns.cluster_label)
+    8. Creates clustering run and identified clusters records for LLM analysis
 
-    Returns paths to generated outputs including montages, XY maps, and cluster data.
+    Returns analysis summary with file paths. Use 'display_classification_results' to view images.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Set up dedicated analysis logger with file output
+    analysis_logger = logging.getLogger(f"analyze_scan_{scan_identifier}")
+    analysis_logger.setLevel(logging.INFO)
+
+    # Create file handler with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = f"/tmp/analyze_scan_{scan_identifier}_{timestamp}.log"
+
+    # Remove existing handlers to avoid duplicate logs
+    for handler in analysis_logger.handlers[:]:
+        analysis_logger.removeHandler(handler)
+
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setLevel(logging.INFO)
+
+    # Create formatter
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    file_handler.setFormatter(formatter)
+    analysis_logger.addHandler(file_handler)
+
+    # Force unbuffered output
+    file_handler.stream.reconfigure(line_buffering=True)
+
     try:
+        analysis_logger.info(
+            f"🚀 Starting 4D-STEM clustering analysis for scan: {scan_identifier}"
+        )
+        analysis_logger.info(
+            f"Parameters: k_clusters={k_clusters}, device={device}, out_root={out_root}"
+        )
+        analysis_logger.info(f"Log file: {log_file}")
+        analysis_logger.info("=" * 80)
+
+        # Step 1: Database connection and validation
+        analysis_logger.info("📋 STEP 1/8: Connecting to database and validating scan")
         sql_driver = await get_sql_driver()
+        analysis_logger.info("✅ Database connection established")
+
+        # Step 2-6: Call analyze_scan (which includes data loading, feature extraction, PCA, clustering, file generation)
+        analysis_logger.info(
+            "🔄 STEP 2-6: Running core clustering analysis (data loading, feature extraction, PCA, k-means, file generation)"
+        )
+        analysis_logger.info("   This includes:")
+        analysis_logger.info("   • STEP 2: Loading .mat files from database")
+        analysis_logger.info("   • STEP 3: GPU-accelerated feature extraction")
+        analysis_logger.info("   • STEP 4: PCA dimensionality reduction")
+        analysis_logger.info("   • STEP 5: K-means clustering")
+        analysis_logger.info("   • STEP 6: Generating montages and XY maps")
+
         result = await analyze_scan(
             sql_driver=sql_driver,
             scan_identifier=scan_identifier,
@@ -595,9 +643,236 @@ async def analyze_scan_tool(
             seed=0,
             device=device,
         )
-        return format_text_response(result)
+
+        analysis_logger.info("✅ Core clustering analysis completed successfully")
+        analysis_logger.info(
+            f"📊 Results: {result['total_patterns']} patterns processed into {result['k']} clusters"
+        )
+        analysis_logger.info(f"📁 Output directory: {result['out_dir']}")
+
+        # Step 7: Database storage (already done in analyze_scan, just log the results)
+        analysis_logger.info("📋 STEP 7: Database storage verification")
+        if result.get("updated_patterns", 0) == result.get("total_patterns", 0):
+            analysis_logger.info(
+                "✅ All cluster assignments successfully stored in database"
+            )
+        else:
+            analysis_logger.warning(
+                f"⚠️ Partial database storage: {result.get('updated_patterns', 0)}/{result.get('total_patterns', 0)} patterns saved"
+            )
+
+        analysis_logger.info(
+            f"🗄️ Clustering run ID: {result.get('clustering_run_id', 'N/A')}"
+        )
+        analysis_logger.info(
+            f"🗺️ Classification map saved: {result.get('classification_map_saved', False)}"
+        )
+
+        # Step 8: Prepare response data
+        analysis_logger.info("📝 STEP 8: Preparing analysis summary and response")
+
+        # Add analysis summary as text
+        summary_text = f"""
+✅ Clustering Analysis Completed Successfully!
+{"=" * 50}
+
+Scan Identifier: {scan_identifier}
+Output Directory: {result["out_dir"]}
+Number of Clusters (K): {result["k"]}
+Total Patterns Processed: {result["total_patterns"]}
+Database Storage: {result["updated_patterns"]}/{result["total_patterns"]} patterns saved
+Classification Map Saved: {result.get("classification_map_saved", False)}
+
+Generated Files:
+📊 Classification Map: {result["xy_map"]}
+📁 Montage Directory: {result["montage_dir"]}
+💾 Cluster Data: {result["npz"]}
+
+💡 Use 'display_classification_results' or 'show_classification_overview' to view the results.
+Log File: {log_file}
+"""
+
+        analysis_logger.info("🎉 ANALYSIS COMPLETED SUCCESSFULLY!")
+        analysis_logger.info("=" * 80)
+        analysis_logger.info("📋 Summary:")
+        analysis_logger.info("   • Total processing time logged in this file")
+        analysis_logger.info(f"   • Scan: {scan_identifier}")
+        analysis_logger.info(f"   • Clusters: {result['k']}")
+        analysis_logger.info(f"   • Patterns: {result['total_patterns']}")
+        analysis_logger.info(f"   • Database storage: {result['updated_patterns']}/{result['total_patterns']}")
+        analysis_logger.info(f"   • Log saved to: {log_file}")
+
+        return [types.TextContent(type="text", text=summary_text)]
+
     except Exception as e:
+        analysis_logger.error(f"💥 ANALYSIS FAILED: {str(e)}")
+        analysis_logger.error("=" * 80)
         logger.error(f"Error analyzing scan '{scan_identifier}': {e}", exc_info=True)
+        return [types.TextContent(type="text", text=f"❌ Error: {str(e)}")]
+    finally:
+        # Clean up file handler
+        for handler in analysis_logger.handlers[:]:
+            handler.close()
+            analysis_logger.removeHandler(handler)
+
+
+@mcp.tool(
+    description="Display classification results for a scan that has already been analyzed. Shows the classification map and cluster montages without re-running analysis."
+)
+async def display_classification_results(
+    ctx: Context,
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan."
+    ),
+    max_clusters_to_show: int = Field(
+        description="Maximum number of cluster montages to display (default: 4)",
+        default=4,
+    ),
+) -> ResponseType:
+    """
+    Displays the classification results for a scan that has already been analyzed.
+
+    This is a quick way to view classification images without re-running the clustering analysis.
+    Use this after running analyze_scan_tool if you want to see the results again.
+    """
+    try:
+        # Use the existing show_classification_overview function
+        return await show_classification_overview(
+            ctx, scan_identifier, max_clusters_to_show
+        )
+    except Exception as e:
+        logger.error(f"Error displaying classification results: {e}")
+        return [types.TextContent(type="text", text=f"❌ Error: {str(e)}")]
+
+
+@mcp.tool(
+    description="Verify cluster assignments are stored in the database for a specific scan. Shows cluster distribution and database storage status."
+)
+async def verify_cluster_storage_tool(
+    scan_name: str = Field(
+        description="The name of the scan to check cluster assignments for."
+    ),
+) -> ResponseType:
+    """
+    Verify that cluster assignments are properly stored in the database.
+
+    This tool:
+    1. Checks if diffraction patterns have cluster_label assigned
+    2. Shows cluster distribution statistics
+    3. Lists clustering runs for the scan
+    4. Verifies database integrity for cluster assignments
+
+    Returns detailed information about cluster storage status.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Get clustering runs for this scan
+        runs_query = """
+            SELECT cr.id, cr.k_value, cr.run_timestamp, cr.algorithm_details,
+                   COUNT(dp.id) as patterns_with_clusters
+            FROM clustering_runs cr
+            JOIN scans s ON cr.scan_id = s.id
+            LEFT JOIN diffraction_patterns dp ON dp.clustering_run_id = cr.id
+            WHERE s.scan_name = %s
+            GROUP BY cr.id, cr.k_value, cr.run_timestamp, cr.algorithm_details
+            ORDER BY cr.run_timestamp DESC
+        """
+        runs_result = await sql_driver.execute_query(runs_query, [scan_name])
+
+        if not runs_result:
+            return format_text_response(
+                {
+                    "scan_name": scan_name,
+                    "status": "No clustering runs found",
+                    "clustering_runs": [],
+                    "cluster_distribution": {},
+                }
+            )
+
+        # Get cluster distribution for the latest run
+        latest_run_id = runs_result[0].cells["id"]
+
+        distribution_query = """
+            SELECT dp.cluster_label, COUNT(*) as pattern_count,
+                   MIN(rmf.row_index) as min_row, MAX(rmf.row_index) as max_row,
+                   MIN(dp.col_index) as min_col, MAX(dp.col_index) as max_col
+            FROM diffraction_patterns dp
+            JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id
+            JOIN scans s ON rmf.scan_id = s.id
+            WHERE s.scan_name = %s AND dp.clustering_run_id = %s AND dp.cluster_label IS NOT NULL
+            GROUP BY dp.cluster_label
+            ORDER BY dp.cluster_label
+        """
+        distribution_result = await sql_driver.execute_query(
+            distribution_query, [scan_name, latest_run_id]
+        )
+
+        # Get total patterns vs patterns with clusters
+        total_patterns_query = """
+            SELECT 
+                COUNT(*) as total_patterns,
+                COUNT(dp.cluster_label) as patterns_with_clusters,
+                COUNT(DISTINCT dp.cluster_label) as unique_clusters
+            FROM diffraction_patterns dp
+            JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id
+            JOIN scans s ON rmf.scan_id = s.id
+            WHERE s.scan_name = %s AND dp.clustering_run_id = %s
+        """
+        total_result = await sql_driver.execute_query(
+            total_patterns_query, [scan_name, latest_run_id]
+        )
+
+        # Format results
+        clustering_runs = [
+            {
+                "run_id": row.cells["id"],
+                "k_value": row.cells["k_value"],
+                "timestamp": str(row.cells["run_timestamp"]),
+                "algorithm_details": row.cells["algorithm_details"],
+                "patterns_with_clusters": row.cells["patterns_with_clusters"],
+            }
+            for row in runs_result
+        ]
+
+        cluster_distribution = {}
+        for row in distribution_result:
+            cluster_id = row.cells["cluster_label"]
+            cluster_distribution[cluster_id] = {
+                "pattern_count": row.cells["pattern_count"],
+                "spatial_bounds": {
+                    "row_range": [row.cells["min_row"], row.cells["max_row"]],
+                    "col_range": [row.cells["min_col"], row.cells["max_col"]],
+                },
+            }
+
+        stats = total_result[0].cells if total_result else {}
+
+        response_data = {
+            "scan_name": scan_name,
+            "latest_clustering_run_id": latest_run_id,
+            "storage_statistics": {
+                "total_patterns": stats.get("total_patterns", 0),
+                "patterns_with_clusters": stats.get("patterns_with_clusters", 0),
+                "unique_clusters": stats.get("unique_clusters", 0),
+                "storage_complete": (
+                    stats.get("total_patterns", 0)
+                    == stats.get("patterns_with_clusters", 0)
+                    if stats.get("total_patterns", 0) > 0
+                    else False
+                ),
+            },
+            "clustering_runs": clustering_runs,
+            "cluster_distribution": cluster_distribution,
+        }
+
+        return format_text_response(response_data)
+
+    except Exception as e:
+        logger.error(
+            f"Error verifying cluster storage for scan '{scan_name}': {e}",
+            exc_info=True,
+        )
         return format_error_response(str(e))
 
 
@@ -1038,10 +1313,12 @@ def extract_image_from_mat_file(
 @mcp.tool(
     description="Show a specified raw image from the database based on its ID and its group id."
 )
-async def show_raw_image(image_in_mat: int, mat_number: int, scan_id:int, ctx: Context) -> Image:
+async def show_raw_image(
+    image_in_mat: int, mat_number: int, scan_id: int, ctx: Context
+) -> Image:
     """
     Retrieves a single image and display it to user based on the provided scan ID and matrix number and group id.
-    
+
     For example, if the user wants to see image 5 from the 10.mat file of scan ID 2, you should provide:
     image_in_mat=5, mat_number=10, scan_id=2.
     """
@@ -1078,6 +1355,428 @@ async def show_raw_image(image_in_mat: int, mat_number: int, scan_id:int, ctx: C
     except Exception as e:
         logger.error(f"Error showing raw image: {e}")
         raise e
+
+
+# @mcp.tool(
+#     description="Show the classification map (XY plot) generated after clustering analysis of a scan."
+# )
+# async def show_classification_map(
+#     ctx: Context,
+#     scan_identifier: Union[int, str] = Field(
+#         description="The unique ID (integer) or name (string) of the scan to show classification map for."
+#     ),
+# ) -> Image:
+#     """
+#     Displays the classification map (XY plot) showing cluster assignments across the scan area.
+
+#     This map is generated after running clustering analysis and shows the spatial distribution
+#     of different clusters in different colors.
+#     """
+#     try:
+#         sql_driver = await get_sql_driver()
+
+#         # Query to get classification map path
+#         if isinstance(scan_identifier, int):
+#             condition_column = "id"
+#             param = scan_identifier
+#         else:
+#             condition_column = "scan_name"
+#             param = str(scan_identifier)
+
+#         query = f"""
+#             SELECT classification_map_path, scan_name
+#             FROM scans 
+#             WHERE {condition_column} = {{}}
+#         """
+
+#         rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+
+#         if not rows:
+#             raise Exception(f"No scan found with identifier: {scan_identifier}")
+
+#         classification_map_path = rows[0].cells["classification_map_path"]
+#         scan_name = rows[0].cells["scan_name"]
+
+#         if not classification_map_path:
+#             raise Exception(
+#                 f"No classification map available for scan '{scan_name}'. Run clustering analysis first."
+#             )
+
+#         if not os.path.exists(classification_map_path):
+#             raise Exception(
+#                 f"Classification map file does not exist: {classification_map_path}"
+#             )
+
+#         # Normalize path separators
+#         classification_map_path = str.replace(classification_map_path, "\\", "/")
+#         image_data = (await fetch_images([classification_map_path], ctx))[0]
+#         return image_data
+
+#     except Exception as e:
+#         logger.error(f"Error showing classification map: {e}")
+#         raise e
+
+@mcp.tool(
+    description="Display an image from a local file URL (like file:///path/to/image.png) using the MCP image system."
+)
+async def show_classification_map_local_link(
+    ctx: Context,
+    file_url: str = Field(
+        description="Local file URL starting with 'file://' (e.g., 'file:///tmp/scan_analysis/1/1_xy_map_FINAL.png')"
+    ),
+) -> Image:
+    """
+    Displays an image from a local file URL using the MCP image system.
+    
+    This function accepts file URLs in the format:
+    - file:///absolute/path/to/image.png
+    - file://localhost/absolute/path/to/image.png
+    
+    The function will extract the local file path and load the image using the MCP image processing system.
+    """
+    try:
+        from urllib.parse import urlparse
+        
+        # Parse the file URL
+        parsed_url = urlparse(file_url)
+        
+        if parsed_url.scheme != 'file':
+            raise Exception(f"Invalid URL scheme. Expected 'file://', got '{parsed_url.scheme}://'")
+        
+        # Extract the local file path
+        local_file_path = parsed_url.path
+        
+        # Handle Windows paths if needed
+        if os.name == 'nt' and local_file_path.startswith('/') and ':' in local_file_path[1:3]:
+            local_file_path = local_file_path[1:]  # Remove leading slash for Windows paths like /C:/...
+        
+        logger.info(f"Extracting local file path from URL: {file_url} -> {local_file_path}")
+        
+        if not os.path.exists(local_file_path):
+            raise Exception(f"File does not exist: {local_file_path}")
+        
+        if not os.path.isfile(local_file_path):
+            raise Exception(f"Path is not a file: {local_file_path}")
+        
+        # Check if it's an image file based on extension
+        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
+        file_ext = os.path.splitext(local_file_path)[1].lower()
+        if file_ext not in image_extensions:
+            raise Exception(f"File does not appear to be an image (extension: {file_ext})")
+        
+        # Use the MCP image system to load and process the image
+        logger.info(f"Loading image using MCP image system: {local_file_path}")
+        image_data = (await fetch_images([local_file_path], ctx))[0]
+        
+        if image_data is None:
+            raise Exception(f"Failed to load image from: {local_file_path}")
+        
+        return image_data
+
+    except Exception as e:
+        logger.error(f"Error displaying image from local file URL '{file_url}': {e}")
+        raise e
+
+
+
+@mcp.tool(
+    description="Show cluster montage images generated after clustering analysis. Shows representative patterns for each cluster."
+)
+async def show_cluster_montages(
+    ctx: Context,
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan."
+    ),
+    cluster_id: int = Field(
+        description="The cluster ID to show montage for (0-based index)."
+    ),
+) -> Image:
+    """
+    Displays montage images for a specific cluster showing representative diffraction patterns.
+
+    Montages are generated during clustering analysis and show sample patterns from each cluster
+    to help understand what each cluster represents.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Get the clustering run information and results path
+        if isinstance(scan_identifier, int):
+            condition_column = "s.id"
+            param = scan_identifier
+        else:
+            condition_column = "s.scan_name"
+            param = str(scan_identifier)
+
+        query = f"""
+            SELECT cr.results_path, s.scan_name
+            FROM clustering_runs cr
+            JOIN scans s ON cr.scan_id = s.id
+            WHERE {condition_column} = {{}}
+            ORDER BY cr.run_timestamp DESC
+            LIMIT 1
+        """
+
+        rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+
+        if not rows:
+            raise Exception(f"No clustering results found for scan: {scan_identifier}")
+
+        results_path = rows[0].cells["results_path"]
+        scan_name = rows[0].cells["scan_name"]
+
+        if not results_path:
+            raise Exception(f"No clustering results path found for scan '{scan_name}'")
+
+        # Construct montage file path
+        montage_dir = os.path.join(results_path, "montages")
+        montage_file = os.path.join(montage_dir, f"cluster_{cluster_id}.png")
+
+        if not os.path.exists(montage_file):
+            raise Exception(f"Montage file does not exist: {montage_file}")
+
+        # Normalize path separators
+        montage_file = str.replace(montage_file, "\\", "/")
+        image_data = (await fetch_images([montage_file], ctx))[0]
+        return image_data
+
+    except Exception as e:
+        logger.error(f"Error showing cluster montage: {e}")
+        raise e
+
+
+@mcp.tool(
+    description="List all available cluster images and classification maps for a scan."
+)
+async def list_classification_images(
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan."
+    ),
+) -> ResponseType:
+    """
+    Lists all available classification-related images for a scan including:
+    - Classification map (XY plot)
+    - Individual cluster montages
+    - File paths and existence status
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Get scan and clustering information
+        if isinstance(scan_identifier, int):
+            condition_column = "s.id"
+            param = scan_identifier
+        else:
+            condition_column = "s.scan_name"
+            param = str(scan_identifier)
+
+        query = f"""
+            SELECT s.id, s.scan_name, s.classification_map_path,
+                   cr.id as clustering_run_id, cr.results_path, cr.k_value,
+                   cr.run_timestamp
+            FROM scans s
+            LEFT JOIN clustering_runs cr ON s.id = cr.scan_id
+            WHERE {condition_column} = {{}}
+            ORDER BY cr.run_timestamp DESC
+        """
+
+        rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+
+        if not rows:
+            return format_text_response(
+                f"No scan found with identifier: {scan_identifier}"
+            )
+
+        scan_info = rows[0].cells
+        scan_name = scan_info["scan_name"]
+        classification_map_path = scan_info["classification_map_path"]
+
+        # Prepare response data
+        response_data = {
+            "scan_id": scan_info["id"],
+            "scan_name": scan_name,
+            "classification_images": {},
+        }
+
+        # Check classification map
+        if classification_map_path:
+            response_data["classification_images"]["classification_map"] = {
+                "path": classification_map_path,
+                "exists": os.path.exists(classification_map_path),
+                "description": "Overall cluster classification XY map",
+            }
+        else:
+            response_data["classification_images"]["classification_map"] = {
+                "path": None,
+                "exists": False,
+                "description": "Classification map not generated yet",
+            }
+
+        # Check cluster montages
+        clustering_runs = []
+        for row in rows:
+            if row.cells["clustering_run_id"]:
+                run_data = {
+                    "clustering_run_id": row.cells["clustering_run_id"],
+                    "k_value": row.cells["k_value"],
+                    "timestamp": str(row.cells["run_timestamp"]),
+                    "results_path": row.cells["results_path"],
+                    "montages": {},
+                }
+
+                results_path = row.cells["results_path"]
+                k_value = row.cells["k_value"]
+
+                if results_path and k_value:
+                    montage_dir = os.path.join(results_path, "montages")
+
+                    # Check each cluster montage
+                    for cluster_idx in range(k_value):
+                        montage_file = os.path.join(
+                            montage_dir, f"cluster_{cluster_idx}.png"
+                        )
+                        run_data["montages"][f"cluster_{cluster_idx}"] = {
+                            "path": montage_file,
+                            "exists": os.path.exists(montage_file),
+                            "description": f"Montage for cluster {cluster_idx}",
+                        }
+
+                clustering_runs.append(run_data)
+
+        response_data["clustering_runs"] = clustering_runs
+
+        return format_text_response(response_data)
+
+    except Exception as e:
+        logger.error(f"Error listing classification images: {e}")
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Show a comprehensive classification overview including the classification map and sample cluster montages for a scan."
+)
+async def show_classification_overview(
+    ctx: Context,
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan."
+    ),
+    max_clusters_to_show: int = Field(
+        description="Maximum number of cluster montages to display (default: 4)",
+        default=4,
+    ),
+) -> ResponseType:
+    """
+    Displays a comprehensive overview of classification results including:
+    - The overall classification map (XY plot)
+    - Sample cluster montages for the first few clusters
+    - Summary statistics
+
+    This is a convenient tool to quickly see the results of clustering analysis.
+    """
+    try:
+        # First get the classification map
+        try:
+            classification_map = await show_classification_map(ctx, scan_identifier)
+            # Convert Image to ImageContent
+            results = [
+                types.ImageContent(
+                    type="image",
+                    data=classification_map.data,
+                    mimeType=classification_map.mimeType,
+                )
+            ]
+        except Exception as e:
+            results = []
+            logger.warning(f"Could not load classification map: {e}")
+
+        # Get scan information and clustering details
+        sql_driver = await get_sql_driver()
+
+        if isinstance(scan_identifier, int):
+            condition_column = "s.id"
+            param = scan_identifier
+        else:
+            condition_column = "s.scan_name"
+            param = str(scan_identifier)
+
+        query = f"""
+            SELECT s.scan_name, cr.k_value, cr.run_timestamp,
+                   COUNT(dp.id) as total_patterns,
+                   COUNT(DISTINCT dp.cluster_label) as assigned_clusters
+            FROM scans s
+            LEFT JOIN clustering_runs cr ON s.id = cr.scan_id
+            LEFT JOIN diffraction_patterns dp ON dp.clustering_run_id = cr.id
+            WHERE {condition_column} = {{}}
+            GROUP BY s.scan_name, cr.k_value, cr.run_timestamp
+            ORDER BY cr.run_timestamp DESC
+            LIMIT 1
+        """
+
+        rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+
+        if rows:
+            scan_info = rows[0].cells
+            scan_name = scan_info["scan_name"]
+            k_value = scan_info["k_value"] or 0
+            total_patterns = scan_info["total_patterns"] or 0
+            assigned_clusters = scan_info["assigned_clusters"] or 0
+
+            # Add summary information as text
+            summary_text = f"""
+Classification Overview for Scan: {scan_name}
+{"=" * 50}
+Total K-value (clusters): {k_value}
+Total patterns analyzed: {total_patterns}
+Successfully assigned clusters: {assigned_clusters}
+Analysis timestamp: {scan_info.get("run_timestamp", "N/A")}
+
+Images shown below:
+1. Classification Map - Overall spatial distribution of clusters
+"""
+
+            # Add cluster montages (limited by max_clusters_to_show)
+            clusters_shown = 0
+            if k_value > 0:
+                for cluster_id in range(min(k_value, max_clusters_to_show)):
+                    try:
+                        montage = await show_cluster_montages(
+                            ctx, scan_identifier, cluster_id
+                        )
+                        # Convert Image to ImageContent
+                        results.append(
+                            types.ImageContent(
+                                type="image",
+                                data=montage.data,
+                                mimeType=montage.mimeType,
+                            )
+                        )
+                        clusters_shown += 1
+                        summary_text += f"{clusters_shown + 1}. Cluster {cluster_id} Montage - Representative patterns\n"
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not load montage for cluster {cluster_id}: {e}"
+                        )
+
+            if k_value > max_clusters_to_show:
+                summary_text += f"\n... and {k_value - max_clusters_to_show} more clusters (use show_cluster_montages tool to view individually)"
+
+            # Insert summary at the beginning
+            results.insert(0, types.TextContent(type="text", text=summary_text))
+
+        else:
+            results.append(
+                types.TextContent(
+                    type="text",
+                    text=f"No clustering analysis found for scan: {scan_identifier}",
+                )
+            )
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error showing classification overview: {e}")
+        return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+
 
 @mcp.tool(description="Check the status of background analysis jobs.")
 @mcp.tool(description="Check the status of background analysis jobs.")
@@ -1346,9 +2045,7 @@ async def run_llm_cluster_analysis(
             )
 
         # Get base URL and model from config, with defaults
-        base_url = api_keys_config.get(
-            "base_url", "https://api.example.com"
-        )
+        base_url = api_keys_config.get("base_url", "https://api.example.com")
         model = api_keys_config.get("model", "default-model")
 
         # Initialize analysis pipeline
@@ -1451,9 +2148,7 @@ async def get_llm_analysis_summary(
 
         if api_keys_config:
             api_keys_list = api_keys_config.get("api_keys", ["dummy"])
-            base_url = api_keys_config.get(
-                "base_url", "https://api.example.com"
-            )
+            base_url = api_keys_config.get("base_url", "https://api.example.com")
             model = api_keys_config.get("model", "default-model")
         else:
             # Dummy values for read operations that don't need actual API calls
@@ -1503,6 +2198,7 @@ async def get_llm_analysis_summary(
     except Exception as e:
         logger.error(f"Failed to get LLM analysis summary: {e}")
         return format_error_response(f"Failed to get analysis summary: {str(e)}")
+
 
 @mcp.tool(
     description="List and inspect JSON analysis results from batch image processing"
