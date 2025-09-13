@@ -7,8 +7,6 @@ import signal
 import sys
 import shutil
 import scipy.io
-import psycopg2
-import scipy.io
 import numpy as np
 from enum import Enum
 from typing import Any
@@ -53,14 +51,6 @@ HYPOPG_EXTENSION = "hypopg"
 ResponseType = List[types.TextContent | types.ImageContent | types.EmbeddedResource]
 
 logger = logging.getLogger(__name__)
-
-DB_CONFIG = {
-    "dbname": "4dllm",
-    "user": "postgres",
-    "password": "1234",
-    "host": "localhost",
-    "port": "5432",
-}
 
 
 class AccessMode(str, Enum):
@@ -1024,16 +1014,16 @@ def preprocess_image(img, top_percent=0.5, eps=1e-8, crop_size=224):
 
 
 def extract_image_from_mat_file(
-    mat_file_path: str, image_id: int, group_number: int, output_path: str
+    mat_file_path: str, image_in_mat: int, group_number: int, output_path: str
 ):
     mat_data = scipy.io.loadmat(mat_file_path)
     data = mat_data["data"]
-    image = data[image_id - 1]
+    image = data[image_in_mat - 1]
     image = preprocess_image(image)
     os.makedirs(output_path, exist_ok=True)
     os.makedirs(os.path.join(output_path, str(group_number)), exist_ok=True)
     output_filename = os.path.join(
-        output_path, str(group_number), f"image_{image_id}.png"
+        output_path, str(group_number), f"image_{image_in_mat}.png"
     )
     img_uint8 = (image * 255).astype(np.uint8)
     pil_img = pil_Image.fromarray(img_uint8)
@@ -1044,21 +1034,43 @@ def extract_image_from_mat_file(
 @mcp.tool(
     description="Show a specified raw image from the database based on its ID and its group id."
 )
-async def show_raw_image(image_id: int, group_number: int, ctx: Context) -> Image:
-    sql_query = """SELECT file_path FROM raw_mat_files WHERE scan_id = '1' AND row_index = '%s';"""
-    with psycopg2.connect(**DB_CONFIG) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(sql_query, (group_number,))
-            result = cursor.fetchone()
-            mat_file_path = result[0]
-            if os.path.exists(mat_file_path) is False:
-                raise Exception("!" + mat_file_path)
-            image_dir = os.path.join(
-                str(os.path.dirname(mat_file_path)), "..", "extracted_images"
+async def show_raw_image(image_in_mat: int, mat_number: int, scan_id:int, ctx: Context) -> Image:
+    """
+    Retrieves a single image and display it to user based on the provided scan ID and matrix number and group id.
+    
+    For example, if the user wants to see image 5 from the 10.mat file of scan ID 2, you should provide:
+    image_in_mat=5, mat_number=10, scan_id=2.
+    """
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Use parameterized query to get the file path
+        rows = await SafeSqlDriver.execute_param_query(
+            sql_driver,
+            "SELECT file_path FROM raw_mat_files WHERE scan_id = {} AND row_index = {};",
+            [scan_id, mat_number],  # Using 1 as hardcoded scan_id as in original code
+        )
+
+        if not rows:
+            raise Exception(
+                f"No mat file found for scan_id=1 and row_index={mat_number}"
             )
-            image_path = extract_image_from_mat_file(
-                mat_file_path, image_id, group_number, image_dir
-            )
-            image_path = str.replace(image_path, "\\", "/")
-            image_data = (await fetch_images([image_path], ctx))[0]
-            return image_data
+
+        mat_file_path = rows[0].cells["file_path"]
+
+        if not os.path.exists(mat_file_path):
+            raise Exception(f"Mat file does not exist: {mat_file_path}")
+
+        image_dir = os.path.join(
+            str(os.path.dirname(mat_file_path)), "..", "extracted_images"
+        )
+        image_path = extract_image_from_mat_file(
+            mat_file_path, image_in_mat, mat_number, image_dir
+        )
+        image_path = str.replace(image_path, "\\", "/")
+        image_data = (await fetch_images([image_path], ctx))[0]
+        return image_data
+
+    except Exception as e:
+        logger.error(f"Error showing raw image: {e}")
+        raise e
