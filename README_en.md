@@ -8,8 +8,14 @@ This project uses [postgres-mcp](https://github.com/crystaldba/postgres-mcp), wi
 
 ## Structure
 
-
-
+<div align="center">
+  <picture>
+      <img src="assets/struct_1.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+  <picture>
+      <img src="assets/struct_2.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+</div>
 
 ## Quick Start
 
