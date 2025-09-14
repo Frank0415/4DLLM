@@ -25,6 +25,7 @@ dependencies = [
     { name = "socks" },
     { name = "socksio" },
     { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -47,6 +48,7 @@ requires-dist = [
     { name = "socks", specifier = ">=0" },
     { name = "socksio", specifier = ">=1.0.0" },
     { name = "torch", specifier = ">=2.8.0" },
+    { name = "tqdm", specifier = ">=4.67.1" },
 ]
 
 [[package]]

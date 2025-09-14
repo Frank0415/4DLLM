@@ -13,9 +13,10 @@ import numpy as np
 from enum import Enum
 from typing import Any
 from typing import List
-from typing import Union
+from typing import Union, Optional
 from .config import ConfigManager
 from PIL import Image as pil_Image
+from .analyze.db_analyze import regenerate_classification_map
 
 # Set up unbuffered logging to /tmp/llm_logging with rotation
 log_file_path = "/tmp/llm_logging"
@@ -1602,7 +1603,7 @@ async def generate_cluster_consensus_tool(
         logger.info(f"Found clustering run: id={clustering_run_id}, k_value={k_value}")
 
         logger.info(
-            f"Generating consensus descriptions for scan '{scan_name}' with {k_value} clusters"
+            f"Generating consensus for scan '{scan_name}' with {k_value} clusters"
         )
 
         # Generate consensus for each cluster in parallel (2 at a time)
@@ -1976,7 +1977,6 @@ async def show_cluster_consensus(
 
     try:
         sql_driver = await get_sql_driver()
-        logger.info("Obtained SQL driver")
 
         # Resolve scan ID
         if isinstance(scan_identifier, int):
@@ -3160,6 +3160,64 @@ async def test_llm_analysis(
         return format_error_response(f"Error in test LLM analysis: {e}")
 
 
-if __name__ == "__main__":
-    # This is the entry point when running the server directly
-    asyncio.run(main())
+@mcp.tool(
+    description="Regenerate the classification map using LLM-assigned classes (groups by classification_code)."
+)
+async def regenerate_classification_map_tool(
+    ctx: Context,
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (int) or name (str) of the scan."
+    ),
+    out_root: str = Field(
+        description="Output root directory for regenerated map.",
+        default="/tmp/scan_analysis",
+    ),
+    clustering_run_id: Optional[int] = Field(
+        description="Specific clustering run ID (defaults to latest)", default=None
+    ),
+) -> Image:
+    """
+    Regenerate the XY classification map based on latest LLM results.
+    """
+    sql_driver = await get_sql_driver()
+    try:
+        # Try to derive a friendly scan name for the output filename
+        if isinstance(scan_identifier, int):
+            rows = await SafeSqlDriver.execute_param_query(
+                sql_driver,
+                "SELECT scan_name FROM scans WHERE id = {}",
+                [scan_identifier],
+            )
+            scan_name = rows[0].cells["scan_name"] if rows else str(scan_identifier)
+        else:
+            scan_name = str(scan_identifier)
+
+        # Ensure output directory exists
+        os.makedirs(out_root, exist_ok=True)
+
+        # Build a full output filename for the regenerated map
+        image_filename = f"{scan_name}_xy_map_REGENERATED.png"
+        full_image_path = os.path.join(out_root, image_filename)
+
+        # Call shared function which expects a full file path
+        saved_path = await regenerate_classification_map(
+            sql_driver, scan_identifier, full_image_path, clustering_run_id
+        )
+
+        # Verify the file was created
+        if not os.path.isfile(saved_path):
+            raise Exception(
+                f"Regenerated classification map not found at: {saved_path}"
+            )
+
+        # Load the saved image using the MCP image pipeline so we return a proper Image object
+        image_obj = (await fetch_images([saved_path], ctx))[0]
+        if image_obj is None:
+            raise Exception(
+                f"Failed to load regenerated classification map from: {saved_path}"
+            )
+        return image_obj
+
+    except Exception as e:
+        logger.error(f"Error in regenerate_classification_map_tool: {e}", exc_info=True)
+        raise
