@@ -2,9 +2,34 @@
 
 面向4DSTEM的微观材料核心分类、数据分析与关系构建工具。
 
+此项目使用了 [postgres-mcp](https://github.com/crystaldba/postgres-mcp), 原始许可证位于 [LICENSE-postgres-mcp](LICENSES/LICENSE-postgres-mcp)。
+
 ---
 
-此项目使用了 [postgres-mcp](https://github.com/crystaldba/postgres-mcp), 原始许可证位于 [LICENSE-postgres-mcp](LICENSES/LICENSE-postgres-mcp)。
+## 项目架构图
+
+<div align="center">
+  <picture>
+      <img src="assets/struct_1.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+  <picture>
+      <img src="assets/struct_2.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+</div>
+
+## 解析结果
+
+<div align="center">
+  <picture>
+      <img src="assets/results.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+</div>
+
+相较传统（人工标定+监督训练）方法：
+- 大幅提高分类颗粒度与准确度
+- 发现更多材料特征
+- MCP自动化显著减少人工工作量，提高效率
+- 数据库化存储与管理，便于后续分析与扩展
 
 ## 快速开始
 

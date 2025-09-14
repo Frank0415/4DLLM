@@ -6,6 +6,11 @@ A core classification, data analysis, and relationship-building tool for microsc
 
 This project uses [postgres-mcp](https://github.com/crystaldba/postgres-mcp), with the original license available at [LICENSE-postgres-mcp](LICENSES/LICENSE-postgres-mcp).
 
+## Structure
+
+
+
+
 ## Quick Start
 
 ### 1. Environment Setup
