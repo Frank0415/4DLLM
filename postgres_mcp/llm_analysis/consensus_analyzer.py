@@ -231,7 +231,6 @@ class ConsensusAnalyzer:
         temp_images_dir = "/tmp/consensus_analysis_images"
         os.makedirs(temp_images_dir, exist_ok=True)
 
-        
         JSON_PROMPT_TEMPLATE = """
 You are an expert materials scientist specializing in the analysis of 4D-STEM and electron diffraction data. Your primary task is to meticulously analyze the provided 2D image, which is a single convergent beam electron diffraction (CBED) pattern, and classify the material's state at the probed location.
 

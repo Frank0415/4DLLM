@@ -11,7 +11,6 @@ COLOR_BORDERS = [
 ]
 
 INITIALIZED_COLORS = [
-    
     [
         "#80d926",
         "#73cc26",
