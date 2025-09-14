@@ -223,3 +223,5 @@ config/db_config.json
 postgres_mcp/to_be_changed.md
 simulation.py
 cif_files
+prev.md
+REAL_LLM_IMPLEMENTATION.md

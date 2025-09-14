@@ -2,9 +2,12 @@ import os
 import asyncio
 from pathlib import Path
 from typing import Union, Dict, Any, List
-
+from tqdm import tqdm
+import logging
+import json
 import numpy as np
 import scipy.io
+import matplotlib.pyplot as plt
 
 # reuse clustering and plotting utilities from pre_class_v2
 from .class_base import (
@@ -21,11 +24,113 @@ from .class_base import (
     RMAX,
     NTHETA,
     BATCH,
-    MONTAGE_GRID,
     CATEGORIES,
+    center_crop_cpu,
+    preprocess_cpu_for_montage,
 )
 from .type_colors import get_color_map
 from ..sql import SafeSqlDriver
+
+
+def get_cluster_categories(num_clusters: int) -> List[int]:
+    """
+    Return a list of cluster indices for a given number of clusters.
+    """
+    return list(range(num_clusters))
+
+
+def draw_cluster_classification_map(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    labels: np.ndarray,
+    num_clusters: int,
+    out_path: Path,
+    cmap_name: str = "tab20",
+) -> None:
+    """
+    Draw and save a classification map for all clusters with distinct colors.
+
+    Args:
+        xs: Array of X-coordinates (row indices).
+        ys: Array of Y-coordinates (column indices).
+        labels: Array of cluster labels for each point.
+        num_clusters: Total number of clusters.
+        out_path: Path to save the classification map image.
+        cmap_name: Name of matplotlib colormap supporting at least num_clusters colors.
+    """
+    cmap = plt.get_cmap(cmap_name, num_clusters)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
+    for cluster in range(num_clusters):
+        mask = labels == cluster
+        if mask.any():
+            ax.scatter(
+                ys[mask], xs[mask], c=[cmap(cluster)], s=1, label=f"Cluster {cluster}"
+            )
+    ax.set_aspect("equal", adjustable="box")
+    ax.invert_yaxis()
+    ax.axis("off")
+    ax.legend(
+        markerscale=5, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize="small"
+    )
+    plt.tight_layout()
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
+# Override MONTAGE_GRID to create 4x4 grids (16 pictures) instead of default
+CLUSTER_MONTAGE_GRID = (4, 4)
+
+
+def save_individual_cluster_images(
+    data_array, labels_np, min_d2_np, out_dir, images_per_cluster=16
+):
+    """
+    Save individual images for each cluster.
+
+    Args:
+        data_array: Array of diffraction patterns
+        labels_np: Cluster labels for each pattern
+        min_d2_np: Distance to cluster center for each pattern
+        out_dir: Output directory for individual images
+        images_per_cluster: Number of individual images to save per cluster
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    uniq = sorted(np.unique(labels_np))
+
+    for k in tqdm(uniq, desc="Saving individual cluster images"):
+        idxs = np.where(labels_np == k)[0]
+        if len(idxs) == 0:
+            continue
+
+        # Sort by distance to cluster center (best representatives first)
+        order = np.argsort(min_d2_np[idxs])
+        # Take the best images (up to images_per_cluster)
+        take = (
+            idxs[order[:images_per_cluster]]
+            if len(order) >= images_per_cluster
+            else idxs[order]
+        )
+
+        # Create a directory for this cluster's individual images
+        cluster_dir = out_dir / f"cluster_{k}"
+        cluster_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save each individual image
+        for i, idx in enumerate(take):
+            img = center_crop_cpu(data_array[idx], 224)
+            img = preprocess_cpu_for_montage(img)
+
+            # Save as individual image
+            plt.figure(figsize=(2.24, 2.24), dpi=100)  # 224x224 pixels
+            plt.imshow(img, cmap="gray", vmin=0.0, vmax=1.0)
+            plt.axis("off")
+            plt.tight_layout(pad=0)
+            plt.savefig(
+                cluster_dir / f"individual_{i:03d}.png",
+                bbox_inches="tight",
+                pad_inches=0,
+            )
+            plt.close()
 
 
 async def _load_mat_async(path: str) -> np.ndarray:
@@ -77,10 +182,21 @@ def _do_clustering_sync(
     logger.info("   🖼️ STEP 6: Generating visualization outputs...")
     out_dir = Path(out_root) / scan_name
     montage_dir = out_dir / "montages"
-    save_cluster_montages(data, labels_np, min_d2_np, montage_dir, grid=MONTAGE_GRID)
+
+    # Save cluster montages with 4x4 grid (16 pictures)
+    save_cluster_montages(
+        data, labels_np, min_d2_np, montage_dir, grid=CLUSTER_MONTAGE_GRID
+    )
     logger.info(f"      📁 Saved cluster montages to: {montage_dir}")
 
-    # Map clusters to semantic keys (cycle through available keys cause it's under development)
+    # Save individual images for each cluster
+    individual_images_dir = out_dir / "individual_images"
+    save_individual_cluster_images(
+        data, labels_np, min_d2_np, individual_images_dir, images_per_cluster=16
+    )
+    logger.info(f"      📁 Saved individual cluster images to: {individual_images_dir}")
+
+    # Map clusters to semantic keys (cycle through available keys)
     semantic_keys = CATEGORIES
     user_map = {i: semantic_keys[i % len(semantic_keys)] for i in range(k_clusters)}
 
@@ -104,6 +220,7 @@ def _do_clustering_sync(
     return {
         "out_dir": str(out_dir),
         "montage_dir": str(montage_dir),
+        "individual_images_dir": str(individual_images_dir),
         "xy_map": str(final_xy_path),
         "npz": str(npz_path),
         "k": int(k_clusters),
@@ -366,3 +483,291 @@ async def analyze_scan(
     )
 
     return result
+
+
+async def regenerate_classification_map(
+    sql_driver,
+    scan_identifier: Union[int, str],
+    out_path: Union[str, Path],
+    clustering_run_id: int = None,
+) -> str:
+    """
+    Regenerate classification map using LLM-assigned classification codes.
+    Patterns sharing the same classification_code use the same color family; clusters within that code get distinct shades.
+
+    Returns the file path of the saved image.
+    """
+    logger = logging.getLogger(f"regenerate_map_{scan_identifier}")
+    logger.info(f"Regenerating classification map for scan {scan_identifier}")
+    # resolve scan_id
+    if isinstance(scan_identifier, int):
+        scan_id = scan_identifier
+    else:
+        rows = await sql_driver.execute_query(
+            "SELECT id FROM scans WHERE scan_name = %s", [scan_identifier]
+        )
+        if not rows:
+            raise RuntimeError(f"Scan not found: {scan_identifier}")
+        scan_id = rows[0].cells["id"]
+    # determine clustering_run_id
+    if clustering_run_id is None:
+        rr = await sql_driver.execute_query(
+            "SELECT id FROM clustering_runs WHERE scan_id = %s ORDER BY run_timestamp DESC LIMIT 1",
+            [scan_id],
+        )
+        if not rr:
+            raise RuntimeError(f"No clustering run for scan: {scan_id}")
+        clustering_run_id = rr[0].cells["id"]
+    # Fetch all diffraction patterns for the clustering run (this ensures full grid coverage)
+    patterns_query = (
+        "SELECT rmf.row_index, dp.col_index, dp.cluster_label "
+        "FROM diffraction_patterns dp "
+        "JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id "
+        "WHERE dp.clustering_run_id = %s "
+        "ORDER BY rmf.row_index, dp.col_index"
+    )
+    pattern_rows = await sql_driver.execute_query(patterns_query, [clustering_run_id])
+    if not pattern_rows:
+        raise RuntimeError(
+            f"No diffraction pattern records found for clustering run {clustering_run_id}"
+        )
+
+    # Load any available LLM results (may be a subset)
+    llm_query = (
+        "SELECT row_index, col_index, cluster_index, llm_detailed_features "
+        "FROM llm_analysis_results "
+        "WHERE scan_id = %s AND clustering_run_id = %s"
+    )
+    llm_rows = await sql_driver.execute_query(llm_query, [scan_id, clustering_run_id])
+
+    # Build quick lookup maps
+    llm_map = {}  # (row,col) -> classification_code
+    cluster_code_map = {}  # cluster_index -> classification_code (if any LLM exists for cluster)
+    if llm_rows:
+        for r in llm_rows:
+            xi = int(r.cells["row_index"])
+            yi = int(r.cells["col_index"])
+            info = r.cells.get("llm_detailed_features")
+            if isinstance(info, str):
+                try:
+                    info = json.loads(info)
+                except json.JSONDecodeError:
+                    info = {}
+            code = int(info.get("classification_code", -1))
+            llm_map[(xi, yi)] = code
+            try:
+                cl = int(r.cells.get("cluster_index", -1))
+                if cl >= 0 and code >= 0:
+                    # If multiple entries for a cluster, keep the first non-negative code (or override)
+                    cluster_code_map[cl] = code
+            except Exception:
+                pass
+
+    xs, ys, clusters, codes = [], [], [], []
+    for r in pattern_rows:
+        xi = int(r.cells["row_index"])
+        yi = int(r.cells["col_index"])
+        cl = int(r.cells.get("cluster_label", -1))
+
+        # Determine classification code: prefer direct LLM per-pattern, then cluster-level mapping, else -1
+        code = llm_map.get((xi, yi), None)
+        if code is None:
+            code = cluster_code_map.get(cl, -1)
+
+        xs.append(xi)
+        ys.append(yi)
+        clusters.append(cl)
+        codes.append(int(code))
+    xs_np = np.array(xs, dtype=int)
+    ys_np = np.array(ys, dtype=int)
+    clusters_np = np.array(clusters, dtype=int)
+    codes_np = np.array(codes, dtype=int)
+    # define color families for each classification code
+    family_cmaps = {
+        0: "Greys",  # Vacuum
+        1: "Blues",  # Crystalline
+        2: "Greens",  # Amorphous
+        3: "Reds",  # Mixed-State
+    }
+    # Build a mapping from cluster -> representative classification code
+    cluster_to_code = {}
+    for cl in sorted(set(clusters_np.tolist())):
+        # find codes for this cluster
+        mask = clusters_np == cl
+        codes_for_cluster = codes_np[mask]
+        # pick the most common non-negative code if possible
+        if len(codes_for_cluster) == 0:
+            cluster_to_code[cl] = -1
+            continue
+        vals, counts = np.unique(codes_for_cluster, return_counts=True)
+        # prefer non -1 codes; if none, keep -1
+        nonneg_mask = vals >= 0
+        if nonneg_mask.any():
+            # choose the non-negative code with highest count
+            valid_vals = vals[nonneg_mask]
+            valid_counts = counts[nonneg_mask]
+            chosen = valid_vals[np.argmax(valid_counts)]
+            cluster_to_code[cl] = int(chosen)
+        else:
+            cluster_to_code[cl] = -1
+
+    # Now assign an RGBA color to every cluster using interpolated gradients
+    # Define light->dark color ranges for each classification code
+    from matplotlib.colors import to_rgba
+
+    def interpolate_color(light_hex, dark_hex, num_colors):
+        """Interpolate between light and dark colors to create a gradient."""
+        light_rgb = tuple(int(light_hex.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
+        dark_rgb = tuple(int(dark_hex.lstrip("#")[i : i + 2], 16) for i in [0, 2, 4])
+
+        colors = []
+        for i in range(num_colors):
+            if num_colors == 1:
+                ratio = 0.5
+            else:
+                ratio = i / (num_colors - 1)
+
+            r = int(light_rgb[0] + (dark_rgb[0] - light_rgb[0]) * ratio)
+            g = int(light_rgb[1] + (dark_rgb[1] - light_rgb[1]) * ratio)
+            b = int(light_rgb[2] + (dark_rgb[2] - light_rgb[2]) * ratio)
+
+            colors.append(f"#{r:02x}{g:02x}{b:02x}")
+        return colors
+
+    # Define color ranges for each classification code
+    color_ranges = {
+        0: ("#d8cdda", "#cbb8e1"),  # Vacuum: light purple to medium purple
+        2: ("#b6d9f5", "#3A4686"),  # Crystalline: light green to dark green
+        1: ("#b9dc69", "#31572c"),  # Amorphous: light blue to dark blue
+        3: ("#e49f5e", "#AB4B31"),  # Mixed-State: light yellow to dark amber
+    }
+
+    # Build a mapping cluster -> category name expected by get_color_map
+    code_labels = {
+        0: "Vacuum",
+        1: "Crystalline",
+        2: "Amorphous",
+        3: "Mixed-State",
+        -1: "Unassigned",
+    }
+
+    # Group clusters by their classification code
+    code_to_clusters = {}
+    for cl, code in cluster_to_code.items():
+        code_to_clusters.setdefault(code, []).append(cl)
+
+    cluster_colors = {}
+    for code, clusters_list in code_to_clusters.items():
+        if code in color_ranges:
+            # Generate interpolated colors for this code
+            light_color, dark_color = color_ranges[code]
+            num_clusters = len(clusters_list)
+            gradient_colors = interpolate_color(light_color, dark_color, num_clusters)
+
+            # Assign colors to clusters (sorted by cluster index)
+            for i, cl in enumerate(sorted(clusters_list)):
+                cluster_colors[cl] = to_rgba(gradient_colors[i])
+        else:
+            # Fallback for unknown codes - use gray
+            for cl in clusters_list:
+                cluster_colors[cl] = (0.8, 0.8, 0.8, 1.0)
+
+    # Handle any clusters not in code_to_clusters (defensive)
+    for cl in sorted(set(clusters_np.tolist())):
+        if cl not in cluster_colors:
+            cluster_colors[cl] = (0.8, 0.8, 0.8, 1.0)
+
+    # Plot all clusters (use assigned colors)
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=150)
+    for cl in sorted(set(clusters_np.tolist())):
+        mask = clusters_np == cl
+        if not mask.any():
+            continue
+        color = cluster_colors.get(cl, (0.8, 0.8, 0.8, 1.0))  # fallback light gray
+        ax.scatter(ys_np[mask], xs_np[mask], c=[color], s=1)
+
+    # Build a detailed legend listing every cluster (K index) with its color and type
+    from matplotlib.patches import Patch
+
+    # Human readable labels for classification codes
+    code_labels = {
+        0: "Vacuum",
+        1: "Crystalline",
+        2: "Amorphous",
+        3: "Mixed-State",
+        -1: "Unassigned",
+    }
+
+    # We want the legend grouped by type (color family) and within each group
+    # the clusters should be ordered by their K index (ascending).
+    legend_handles = []
+    legend_labels = []
+
+    # Ensure we have mapping from code -> clusters (code_to_clusters already built above)
+    # Determine the canonical order of codes: follow family_cmaps ordering, then any
+    # unexpected positive codes, and finally unassigned (-1) if present.
+    ordered_codes = [c for c in family_cmaps.keys() if c in code_to_clusters]
+    # add other codes (excluding -1) in numeric order
+    other_codes = sorted(
+        [c for c in code_to_clusters.keys() if c not in ordered_codes and c != -1]
+    )
+    ordered_codes.extend(other_codes)
+    if -1 in code_to_clusters:
+        ordered_codes.append(-1)
+
+    # For each code group, add legend entries for each cluster in ascending K order
+    for code in ordered_codes:
+        clusters_list = sorted(code_to_clusters.get(code, []))
+        for cl in clusters_list:
+            color = cluster_colors.get(cl, (0.8, 0.8, 0.8, 1.0))
+            legend_handles.append(Patch(facecolor=color, edgecolor="none"))
+            legend_labels.append(f"K{cl}: {code_labels.get(code, f'Code {code}')}")
+
+    # If there are any clusters not present in code_to_clusters (defensive), add them at the end
+    all_clusters = sorted(set(clusters_np.tolist()))
+    covered = (
+        set(sum([v for v in code_to_clusters.values()], []))
+        if code_to_clusters
+        else set()
+    )
+    remaining = [c for c in all_clusters if c not in covered]
+    for cl in remaining:
+        color = cluster_colors.get(cl, (0.8, 0.8, 0.8, 1.0))
+        legend_handles.append(Patch(facecolor=color, edgecolor="none"))
+        legend_labels.append(f"K{cl}: Unknown")
+
+    if legend_handles:
+        # Place legend close to the image (inside the axes, upper-right) and compact
+        legend = ax.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper right",
+            bbox_to_anchor=(0.98, 0.98),
+            framealpha=0.85,
+            fontsize="small",
+            title="Classes",
+            borderaxespad=0.1,
+        )
+        # Ensure legend markers are clean (no edge lines)
+        try:
+            for handle in legend.legendHandles:
+                if hasattr(handle, "set_edgecolor"):
+                    handle.set_edgecolor("none")
+        except Exception:
+            pass
+
+    # Force-disable any grid/axis lines and ticks to ensure a clean image
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect("equal", adjustable="box")
+    ax.invert_yaxis()
+    ax.axis("off")
+    plt.tight_layout()
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_p, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    return str(out_p)

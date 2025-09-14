@@ -23,4 +23,5 @@ dependencies = [
     "socks>=0",
     "socksio>=1.0.0",
     "torch>=2.8.0",
+    "tqdm>=4.67.1",
 ]

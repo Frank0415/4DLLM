@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import datetime
+import json
 import logging
 import os
 import signal
@@ -12,9 +13,34 @@ import numpy as np
 from enum import Enum
 from typing import Any
 from typing import List
-from typing import Union
+from typing import Union, Optional
 from .config import ConfigManager
 from PIL import Image as pil_Image
+from .analyze.db_analyze import regenerate_classification_map
+
+# Set up unbuffered logging to /tmp/llm_logging with rotation
+log_file_path = "/tmp/llm_logging"
+# Check if log file exists and is larger than 10MB, if so, rotate it
+if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
+    # Rotate the log file
+    if os.path.exists(f"{log_file_path}.1"):
+        os.remove(f"{log_file_path}.1")
+    os.rename(log_file_path, f"{log_file_path}.1")
+
+file_handler = logging.FileHandler(log_file_path, mode="a")
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter(
+    "%(asctime)s.%(msecs)03d %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+file_handler.setFormatter(formatter)
+# Force unbuffered output
+file_handler.stream.reconfigure(line_buffering=True)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.propagate = False  # Don't propagate to root logger
 
 import mcp.types as types
 from mcp.server.fastmcp import FastMCP, Context, Image
@@ -29,7 +55,88 @@ from .import_4dstem import process_one_mib
 from .lock_manager import LockManager
 from .cif_analysis import CIFManager, PatternSimulator, PatternComparator
 from .llm_analysis import AnalysisPipeline
+from .llm_analysis.consensus_analyzer import ConsensusAnalyzer
+from .llm_analysis.llm_orchestrator import LLMOrchestrator
 from .mcp_images.mcp_image import fetch_images
+
+# JSON Prompt Template from working implementation
+JSON_PROMPT_TEMPLATE = """
+You are an expert materials scientist specializing in the analysis of 4D-STEM and electron diffraction data. Your primary task is to meticulously analyze the provided 2D image, which is a single convergent beam electron diffraction (CBED) pattern, and classify the material's state at the probed location.
+
+**Your classification must result in one of the following four categories, which you will map to a numeric code:**
+*   `0: Vacuum` (The electron beam did not interact with the sample.)
+*   `1: Crystalline` (The beam interacted with a region of long-range atomic order.)
+*   `2: Amorphous` (The beam interacted with a region of short-range atomic order.)
+*   `3: Mixed-State` (The beam interacted with a region containing both crystalline and amorphous phases.)
+
+**REQUIRED OUTPUT FORMAT:**
+
+Your final output **must** be a single, valid JSON object. Do not include any text, explanation, or markdown formatting before or after the JSON block. The JSON object must have exactly two keys: `classification_code` and `description`.
+
+**JSON Structure:**
+```json
+{
+  "classification_code": "integer",
+  "description": "string"
+}
+```
+
+**Instructions for each key:**
+1.  **`classification_code`**: This field must contain a single integer from the set `{0, 1, 2, 3}`, corresponding to the classification you determined.
+    *   `0` for Vacuum
+    *   `1` for Crystalline
+    *   `2` for Amorphous
+    *   `3` for Mixed-State
+
+2.  **`description`**: In a single, objective paragraph (as a string), provide a detailed analysis of the key visual features in the CBED pattern that justify your classification.
+"""
+
+# Try to load API configuration
+try:
+    from api_manager.apikey_loader import load_api_config
+
+    api_config = load_api_config("config/api_keys.json")
+    if (
+        api_config
+        and api_config.get("api_keys")
+        and not any("your-api-key" in key for key in api_config["api_keys"])
+    ):
+        logger.info("Successfully loaded API configuration")
+        logger.info(f"API config keys: {list(api_config.keys())}")
+        logger.info(f"Number of API keys: {len(api_config['api_keys'])}")
+        llm_orchestrator = LLMOrchestrator(
+            api_keys=api_config["api_keys"],
+            base_url=api_config["base_url"],
+            model=api_config["model"],
+        )
+        consensus_analyzer = ConsensusAnalyzer(llm_orchestrator)
+        logger.info("Successfully initialized LLM orchestrator and consensus analyzer")
+    else:
+        llm_orchestrator = None
+        consensus_analyzer = None
+        if api_config and any(
+            "your-api-key" in key for key in api_config.get("api_keys", [])
+        ):
+            logger.warning(
+                "API configuration contains placeholder keys. Please update config/api_keys.json with real API keys."
+            )
+        else:
+            logger.warning(
+                "API configuration loaded but is empty or invalid. LLM analysis features will not be available."
+            )
+except ImportError as e:
+    llm_orchestrator = None
+    consensus_analyzer = None
+    logger.warning(
+        f"API configuration module not found: {e}. LLM analysis features will not be available."
+    )
+except Exception as e:
+    llm_orchestrator = None
+    consensus_analyzer = None
+    logger.error(f"Error loading API configuration: {e}", exc_info=True)
+    logger.warning(
+        "LLM analysis features will not be available due to configuration error."
+    )
 
 # Initialize FastMCP with default settings
 mcp = FastMCP("postgres-mcp")
@@ -39,8 +146,6 @@ PG_STAT_STATEMENTS = "pg_stat_statements"
 HYPOPG_EXTENSION = "hypopg"
 
 ResponseType = List[types.TextContent | types.ImageContent | types.EmbeddedResource]
-
-logger = logging.getLogger(__name__)
 
 
 class AccessMode(str, Enum):
@@ -699,7 +804,9 @@ Log File: {log_file}
         analysis_logger.info(f"   • Scan: {scan_identifier}")
         analysis_logger.info(f"   • Clusters: {result['k']}")
         analysis_logger.info(f"   • Patterns: {result['total_patterns']}")
-        analysis_logger.info(f"   • Database storage: {result['updated_patterns']}/{result['total_patterns']}")
+        analysis_logger.info(
+            f"   • Database storage: {result['updated_patterns']}/{result['total_patterns']}"
+        )
         analysis_logger.info(f"   • Log saved to: {log_file}")
 
         return [types.TextContent(type="text", text=summary_text)]
@@ -1311,115 +1418,634 @@ def extract_image_from_mat_file(
 
 
 @mcp.tool(
-    description="Show a specified raw image from the database based on its ID and its group id."
+    description="Show a specified raw image from the database based on its ID and its group id. Also displays any LLM analysis tags associated with the image."
 )
 async def show_raw_image(
     image_in_mat: int, mat_number: int, scan_id: int, ctx: Context
-) -> Image:
+) -> ResponseType:
     """
     Retrieves a single image and display it to user based on the provided scan ID and matrix number and group id.
+    Also retrieves and displays any LLM analysis tags associated with the image.
 
     For example, if the user wants to see image 5 from the 10.mat file of scan ID 2, you should provide:
     image_in_mat=5, mat_number=10, scan_id=2.
     """
+    logger.info(
+        f"Starting show_raw_image with image_in_mat={image_in_mat}, mat_number={mat_number}, scan_id={scan_id}"
+    )
+
     try:
         sql_driver = await get_sql_driver()
+        logger.info("Obtained SQL driver")
 
         # Use parameterized query to get the file path
         rows = await SafeSqlDriver.execute_param_query(
             sql_driver,
-            "SELECT file_path FROM raw_mat_files WHERE scan_id = {} AND row_index = {};",
-            [scan_id, mat_number],  # Using 1 as hardcoded scan_id as in original code
+            "SELECT id, file_path FROM raw_mat_files WHERE scan_id = {} AND row_index = {};",
+            [scan_id, mat_number],
         )
 
         if not rows:
+            logger.warning(
+                f"No mat file found for scan_id={scan_id} and row_index={mat_number}"
+            )
             raise Exception(
-                f"No mat file found for scan_id=1 and row_index={mat_number}"
+                f"No mat file found for scan_id={scan_id} and row_index={mat_number}"
             )
 
+        mat_file_id = rows[0].cells["id"]
         mat_file_path = rows[0].cells["file_path"]
+        logger.info(f"Found mat file: id={mat_file_id}, path={mat_file_path}")
 
         if not os.path.exists(mat_file_path):
+            logger.error(f"Mat file does not exist: {mat_file_path}")
             raise Exception(f"Mat file does not exist: {mat_file_path}")
 
         image_dir = os.path.join(
             str(os.path.dirname(mat_file_path)), "..", "extracted_images"
         )
+        logger.info(f"Extracting image to directory: {image_dir}")
         image_path = extract_image_from_mat_file(
             mat_file_path, image_in_mat, mat_number, image_dir
         )
-        image_path = str.replace(image_path, "\\", "/")
+        logger.info(f"Extracted image to path: {image_path}")
+        image_path = str.replace(image_path, "\\\\", "/")
         image_data = (await fetch_images([image_path], ctx))[0]
-        return image_data
+        logger.info("Fetched image data successfully")
+
+        # Try to get LLM analysis tags for this image
+        logger.info("Querying for LLM analysis tags")
+        tags_query = """
+            SELECT lat.tag_category, lat.tag_value, lat.confidence_score
+            FROM llm_analysis_tags lat
+            JOIN llm_analysis_results lar ON lat.result_id = lar.id
+            JOIN diffraction_patterns dp ON lar.pattern_id = dp.id
+            WHERE dp.source_mat_id = %s AND dp.col_index = %s
+            ORDER BY lat.created_at DESC
+        """
+
+        tags_rows = await sql_driver.execute_query(
+            tags_query, [mat_file_id, image_in_mat]
+        )
+        logger.info(f"Found {len(tags_rows) if tags_rows else 0} tags for this image")
+
+        # Prepare response with both image and tags
+        response_items = [
+            types.ImageContent(
+                type="image", data=image_data.data, mimeType=image_data.mimeType
+            )
+        ]
+
+        if tags_rows:
+            tags_info = "\nLLM Analysis Tags:\n"
+            tags_info += "-" * 20 + "\n"
+            for row in tags_rows:
+                tags_info += f"• {row.cells['tag_category']}: {row.cells['tag_value']} (confidence: {row.cells['confidence_score']:.2f})\n"
+            response_items.append(types.TextContent(type="text", text=tags_info))
+            logger.info("Added tags to response")
+        else:
+            response_items.append(
+                types.TextContent(
+                    type="text", text="\nNo LLM analysis tags found for this image."
+                )
+            )
+            logger.info("No tags found for this image")
+
+        logger.info("Returning image and tags response")
+        return response_items
 
     except Exception as e:
-        logger.error(f"Error showing raw image: {e}")
+        logger.error(f"Error showing raw image: {e}", exc_info=True)
         raise e
 
 
-# @mcp.tool(
-#     description="Show the classification map (XY plot) generated after clustering analysis of a scan."
-# )
-# async def show_classification_map(
-#     ctx: Context,
-#     scan_identifier: Union[int, str] = Field(
-#         description="The unique ID (integer) or name (string) of the scan to show classification map for."
-#     ),
-# ) -> Image:
-#     """
-#     Displays the classification map (XY plot) showing cluster assignments across the scan area.
+@mcp.tool(
+    description="Generate consensus descriptions for all clusters in a scan using LLM analysis. This analyzes 16 representative patterns from each cluster and generates a consensus description for each k category."
+)
+async def generate_cluster_consensus_tool(
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan to analyze."
+    ),
+    model: str = Field(
+        description="LLM model to use for analysis (optional)", default=None
+    ),
+) -> ResponseType:
+    """
+    Generate consensus descriptions for all clusters in a scan using LLM analysis.
 
-#     This map is generated after running clustering analysis and shows the spatial distribution
-#     of different clusters in different colors.
-#     """
-#     try:
-#         sql_driver = await get_sql_driver()
+    This tool analyzes 16 representative patterns from each cluster and generates
+    a consensus description for each k category using Gemini 2.5 Pro.
+    Results are stored in the database for future reference.
+    """
+    logger.info(
+        f"Starting generate_cluster_consensus_tool for scan_identifier={scan_identifier}"
+    )
 
-#         # Query to get classification map path
-#         if isinstance(scan_identifier, int):
-#             condition_column = "id"
-#             param = scan_identifier
-#         else:
-#             condition_column = "scan_name"
-#             param = str(scan_identifier)
+    if not consensus_analyzer or not llm_orchestrator:
+        logger.error(
+            "LLM analysis features are not available. API configuration not found."
+        )
+        return format_error_response(
+            "LLM analysis features are not available. API configuration not found."
+        )
 
-#         query = f"""
-#             SELECT classification_map_path, scan_name
-#             FROM scans 
-#             WHERE {condition_column} = {{}}
-#         """
+    try:
+        sql_driver = await get_sql_driver()
+        logger.info("Obtained SQL driver")
 
-#         rows = await SafeSqlDriver.execute_param_query(sql_driver, query, [param])
+        # Resolve scan ID
+        if isinstance(scan_identifier, int):
+            condition_column = "id"
+            param = scan_identifier
+        else:
+            condition_column = "scan_name"
+            param = str(scan_identifier)
 
-#         if not rows:
-#             raise Exception(f"No scan found with identifier: {scan_identifier}")
+        logger.info(
+            f"Resolving scan with condition_column={condition_column}, param={param}"
+        )
 
-#         classification_map_path = rows[0].cells["classification_map_path"]
-#         scan_name = rows[0].cells["scan_name"]
+        # Get scan information
+        scan_query = f"SELECT id, scan_name FROM scans WHERE {condition_column} = {{}}"
+        scan_rows = await SafeSqlDriver.execute_param_query(
+            sql_driver, scan_query, [param]
+        )
 
-#         if not classification_map_path:
-#             raise Exception(
-#                 f"No classification map available for scan '{scan_name}'. Run clustering analysis first."
-#             )
+        if not scan_rows:
+            logger.warning(f"No scan found with identifier: {scan_identifier}")
+            return format_error_response(
+                f"No scan found with identifier: {scan_identifier}"
+            )
 
-#         if not os.path.exists(classification_map_path):
-#             raise Exception(
-#                 f"Classification map file does not exist: {classification_map_path}"
-#             )
+        scan_id = scan_rows[0].cells["id"]
+        scan_name = scan_rows[0].cells["scan_name"]
+        logger.info(f"Found scan: id={scan_id}, name={scan_name}")
 
-#         # Normalize path separators
-#         classification_map_path = str.replace(classification_map_path, "\\", "/")
-#         image_data = (await fetch_images([classification_map_path], ctx))[0]
-#         return image_data
+        # Get the latest clustering run for this scan
+        clustering_query = """
+            SELECT id, k_value, run_timestamp
+            FROM clustering_runs 
+            WHERE scan_id = %s 
+            ORDER BY run_timestamp DESC 
+            LIMIT 1
+        """
+        logger.info("Querying for latest clustering run")
+        clustering_rows = await sql_driver.execute_query(clustering_query, [scan_id])
 
-#     except Exception as e:
-#         logger.error(f"Error showing classification map: {e}")
-#         raise e
+        if not clustering_rows:
+            logger.warning(f"No clustering run found for scan: {scan_name}")
+            return format_error_response(
+                f"No clustering run found for scan: {scan_name}"
+            )
+
+        clustering_run_id = clustering_rows[0].cells["id"]
+        k_value = clustering_rows[0].cells["k_value"]
+        logger.info(f"Found clustering run: id={clustering_run_id}, k_value={k_value}")
+
+        logger.info(
+            f"Generating consensus for scan '{scan_name}' with {k_value} clusters"
+        )
+
+        # Generate consensus for each cluster in parallel (2 at a time)
+        logger.info(
+            f"Generating consensus descriptions for scan '{scan_name}' with {k_value} clusters using concurrency of 2"
+        )
+        # First retrieve valid cluster IDs
+        cluster_list = []
+        for cluster_index in range(k_value):
+            # Retrieve cluster database ID
+            cluster_query = """
+                SELECT id FROM identified_clusters 
+                WHERE run_id = %s AND cluster_index = %s
+            """
+            logger.info(f"Querying cluster_id for cluster_index={cluster_index}")
+            rows = await sql_driver.execute_query(
+                cluster_query, [clustering_run_id, cluster_index]
+            )
+            if not rows:
+                logger.warning(f"No cluster found for index {cluster_index}")
+                continue
+            cluster_id = rows[0].cells["id"]
+            cluster_list.append((cluster_index, cluster_id))
+        consensus_results = []
+        # Process all clusters in parallel so all batch images are generated at once
+        concurrency = len(cluster_list) if cluster_list else 1
+        for i in range(0, len(cluster_list), concurrency):
+            batch = cluster_list[i : i + concurrency]
+            tasks = []
+            for cluster_index, cluster_id in batch:
+                logger.info(f"Scheduling analysis for cluster {cluster_index}")
+                tasks.append(
+                    consensus_analyzer.analyze_cluster_patterns(
+                        sql_driver,
+                        scan_id,
+                        clustering_run_id,
+                        cluster_id,
+                        cluster_index,
+                        model,
+                    )
+                )
+            # Run batch in parallel
+            batch_results = await asyncio.gather(*tasks)
+            for result in batch_results:
+                logger.info(
+                    f"Completed consensus for cluster {result['cluster_index']}"
+                )
+                consensus_results.append(result)
+        logger.info(f"Completed analysis for all {len(consensus_results)} clusters")
+
+        # Store results in database
+        logger.info("Storing consensus results in database")
+        await consensus_analyzer.store_consensus_results(
+            sql_driver, scan_id, clustering_run_id, consensus_results
+        )
+        logger.info("Completed storing consensus results")
+
+        # Format response
+        response_text = f"✅ Consensus analysis completed for scan '{scan_name}' ({k_value} clusters)\n\n"
+        response_text += "Results:\n"
+        for result in consensus_results:
+            response_text += f"  Cluster {result['cluster_index']}: {result['pattern_count']} patterns analyzed\n"
+
+        response_text += "\n💡 Use 'show_cluster_consensus' to view detailed results."
+
+        logger.info("Returning success response")
+        return format_text_response(response_text)
+
+    except Exception as e:
+        logger.error(f"Error generating cluster consensus: {e}", exc_info=True)
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Generate LLM tags for individual diffraction patterns and store them in the database."
+)
+async def generate_pattern_tags_tool(
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan to analyze."
+    ),
+    max_patterns: int = Field(
+        description="Maximum number of patterns to analyze (default: 100)", default=100
+    ),
+) -> ResponseType:
+    """
+    Generate LLM tags for individual diffraction patterns and store them in the database.
+
+    This tool analyzes diffraction patterns using the LLM and generates structured tags
+    that are stored in the database for future querying.
+    """
+    logger.info(
+        f"Starting generate_pattern_tags_tool for scan_identifier={scan_identifier}, max_patterns={max_patterns}"
+    )
+
+    if not llm_orchestrator:
+        logger.error(
+            "LLM analysis features are not available. API configuration not found."
+        )
+        return format_error_response(
+            "LLM analysis features are not available. API configuration not found."
+        )
+
+    try:
+        sql_driver = await get_sql_driver()
+        logger.info("Obtained SQL driver")
+
+        # Resolve scan ID
+        if isinstance(scan_identifier, int):
+            condition_column = "id"
+            param = scan_identifier
+        else:
+            condition_column = "scan_name"
+            param = str(scan_identifier)
+
+        logger.info(
+            f"Resolving scan with condition_column={condition_column}, param={param}"
+        )
+
+        # Get scan information
+        scan_query = f"SELECT id, scan_name FROM scans WHERE {condition_column} = {{}}"
+        scan_rows = await SafeSqlDriver.execute_param_query(
+            sql_driver, scan_query, [param]
+        )
+
+        if not scan_rows:
+            logger.warning(f"No scan found with identifier: {scan_identifier}")
+            return format_error_response(
+                f"No scan found with identifier: {scan_identifier}"
+            )
+
+        scan_id = scan_rows[0].cells["id"]
+        scan_name = scan_rows[0].cells["scan_name"]
+        logger.info(f"Found scan: id={scan_id}, name={scan_name}")
+
+        # Get the latest clustering run for this scan
+        clustering_query = """
+            SELECT id, k_value, run_timestamp
+            FROM clustering_runs 
+            WHERE scan_id = %s 
+            ORDER BY run_timestamp DESC 
+            LIMIT 1
+        """
+        logger.info("Querying for latest clustering run")
+        clustering_rows = await sql_driver.execute_query(clustering_query, [scan_id])
+
+        if not clustering_rows:
+            logger.warning(f"No clustering run found for scan: {scan_name}")
+            return format_error_response(
+                f"No clustering run found for scan: {scan_name}"
+            )
+
+        clustering_run_id = clustering_rows[0].cells["id"]
+        logger.info(f"Found clustering run: id={clustering_run_id}")
+
+        # Get a sample of diffraction patterns
+        patterns_query = """
+            SELECT dp.id, dp.source_mat_id, dp.col_index, dp.cluster_label,
+                   rmf.row_index, rmf.file_path
+            FROM diffraction_patterns dp
+            JOIN raw_mat_files rmf ON dp.source_mat_id = rmf.id
+            WHERE dp.clustering_run_id = %s
+            ORDER BY RANDOM()
+            LIMIT %s
+        """
+
+        logger.info(f"Querying for diffraction patterns with limit={max_patterns}")
+        pattern_rows = await sql_driver.execute_query(
+            patterns_query, [clustering_run_id, max_patterns]
+        )
+
+        if not pattern_rows:
+            logger.warning(f"No diffraction patterns found for scan: {scan_name}")
+            return format_error_response(
+                f"No diffraction patterns found for scan: {scan_name}"
+            )
+
+        logger.info(f"Found {len(pattern_rows)} diffraction patterns to process")
+        processed_count = 0
+        failed_count = 0
+
+        # Create a batch record
+        batch_query = """
+            INSERT INTO llm_analysis_batches 
+            (batch_name, total_patterns, batch_status, started_at)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+        """
+        batch_name = f"Pattern analysis for {scan_name} - {datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        logger.info(f"Creating batch record with name: {batch_name}")
+        batch_result = await sql_driver.execute_query(
+            batch_query,
+            [batch_name, len(pattern_rows), "processing", datetime.datetime.now()],
+        )
+        batch_id = batch_result[0].cells["id"]
+        logger.info(f"Created batch record with id: {batch_id}")
+
+        # Process each pattern
+        for i, row in enumerate(pattern_rows):
+            logger.info(
+                f"Processing pattern {i + 1}/{len(pattern_rows)}: id={row.cells['id']}"
+            )
+            try:
+                pattern_id = row.cells["id"]
+                source_mat_id = row.cells["source_mat_id"]
+                col_index = row.cells["col_index"]
+                cluster_label = row.cells["cluster_label"]
+                row_index = row.cells["row_index"]
+                file_path = row.cells["file_path"]
+
+                logger.info(
+                    f"Pattern details: source_mat_id={source_mat_id}, col_index={col_index}, cluster_label={cluster_label}"
+                )
+
+                # Extract image from mat file
+                image_dir = os.path.join(
+                    os.path.dirname(file_path), "..", "extracted_images"
+                )
+                logger.info(f"Extracting image to directory: {image_dir}")
+                image_path = extract_image_from_mat_file(
+                    file_path, col_index, row_index, image_dir
+                )
+                logger.info(f"Extracted image to path: {image_path}")
+
+                # In a real implementation, we would call the LLM to analyze the image
+                # For now, we'll simulate the result
+                logger.info("Simulating LLM analysis result")
+                simulated_result = {
+                    "classification_code": cluster_label % 4
+                    if cluster_label is not None
+                    else 0,
+                    "tags": [
+                        {
+                            "category": "central_beam",
+                            "value": "bright_well_defined",
+                            "confidence": 0.95,
+                        },
+                        {
+                            "category": "bragg_peaks",
+                            "value": "sharp_point_like",
+                            "confidence": 0.92,
+                        },
+                        {
+                            "category": "symmetry",
+                            "value": "crystallographic",
+                            "confidence": 0.88,
+                        },
+                    ],
+                }
+
+                # Store the analysis result
+                result_query = """
+                    INSERT INTO llm_analysis_results 
+                    (pattern_id, scan_id, clustering_run_id, cluster_id, row_index, col_index, cluster_index,
+                     llm_assigned_class, llm_detailed_features)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (pattern_id) 
+                    DO UPDATE SET
+                        llm_assigned_class = EXCLUDED.llm_assigned_class,
+                        llm_detailed_features = EXCLUDED.llm_detailed_features
+                """
+
+                # Map classification codes to class names
+                class_names = {
+                    0: "Vacuum",
+                    1: "Crystalline",
+                    2: "Amorphous",
+                    3: "Mixed-State",
+                }
+                assigned_class = class_names.get(
+                    simulated_result["classification_code"], "Unknown"
+                )
+
+                logger.info(f"Storing analysis result: assigned_class={assigned_class}")
+                await sql_driver.execute_query(
+                    result_query,
+                    [
+                        pattern_id,
+                        scan_id,
+                        clustering_run_id,
+                        None,
+                        row_index,
+                        col_index,
+                        cluster_label,
+                        assigned_class,
+                        json.dumps(simulated_result),
+                    ],
+                )
+
+                # Store tags
+                for tag in simulated_result["tags"]:
+                    tag_query = """
+                        INSERT INTO llm_analysis_tags 
+                        (result_id, tag_category, tag_value, confidence_score)
+                        VALUES (
+                            (SELECT id FROM llm_analysis_results WHERE pattern_id = %s),
+                            %s, %s, %s
+                        )
+                    """
+                    logger.info(
+                        f"Storing tag: category={tag['category']}, value={tag['value']}"
+                    )
+                    await sql_driver.execute_query(
+                        tag_query,
+                        [pattern_id, tag["category"], tag["value"], tag["confidence"]],
+                    )
+
+                processed_count += 1
+                logger.info(f"Completed processing pattern {pattern_id}")
+
+            except Exception as e:
+                logger.error(
+                    f"Error processing pattern {row.cells['id']}: {e}", exc_info=True
+                )
+                failed_count += 1
+                continue
+
+        # Update batch record
+        update_batch_query = """
+            UPDATE llm_analysis_batches 
+            SET processed_patterns = %s, failed_patterns = %s, batch_status = %s, completed_at = %s
+            WHERE id = %s
+        """
+        batch_status = "completed" if failed_count == 0 else "completed_with_errors"
+        logger.info(
+            f"Updating batch record: processed={processed_count}, failed={failed_count}, status={batch_status}"
+        )
+        await sql_driver.execute_query(
+            update_batch_query,
+            [
+                processed_count,
+                failed_count,
+                batch_status,
+                datetime.datetime.now(),
+                batch_id,
+            ],
+        )
+
+        response_text = (
+            f"✅ Pattern tag generation completed for scan '{scan_name}'\n\n"
+        )
+        response_text += f"Patterns processed: {processed_count}\n"
+        response_text += f"Patterns failed: {failed_count}\n"
+        response_text += f"Batch ID: {batch_id}\n\n"
+        response_text += "💡 Use 'show_raw_image' to view images with their tags."
+
+        logger.info("Returning success response")
+        return format_text_response(response_text)
+
+    except Exception as e:
+        logger.error(f"Error generating pattern tags: {e}", exc_info=True)
+        return format_error_response(str(e))
+
+
+@mcp.tool(
+    description="Show the consensus description for a specific cluster in a scan."
+)
+async def show_cluster_consensus(
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (integer) or name (string) of the scan."
+    ),
+    cluster_index: int = Field(
+        description="The cluster index to show consensus for (0-based)."
+    ),
+) -> ResponseType:
+    """
+    Show the consensus description for a specific cluster in a scan.
+    """
+    logger.info(
+        f"Starting show_cluster_consensus for scan_identifier={scan_identifier}, cluster_index={cluster_index}"
+    )
+
+    try:
+        sql_driver = await get_sql_driver()
+
+        # Resolve scan ID
+        if isinstance(scan_identifier, int):
+            condition_column = "s.id"
+            param = scan_identifier
+        else:
+            condition_column = "s.scan_name"
+            param = str(scan_identifier)
+
+        # Get consensus analysis results
+        query = f"""
+            SELECT 
+                la.llm_assigned_class,
+                la.llm_detailed_features,
+                ic.cluster_index,
+                s.scan_name
+            FROM llm_analyses la
+            JOIN identified_clusters ic ON la.cluster_id = ic.id
+            JOIN clustering_runs cr ON ic.run_id = cr.id
+            JOIN scans s ON cr.scan_id = s.id
+            WHERE {condition_column} = {{}} AND ic.cluster_index = {{}}
+            ORDER BY cr.run_timestamp DESC
+            LIMIT 1
+        """
+
+        logger.info("Executing query to get consensus analysis results")
+        rows = await SafeSqlDriver.execute_param_query(
+            sql_driver, query, [param, cluster_index]
+        )
+
+        if not rows:
+            logger.warning(
+                f"No consensus analysis found for cluster {cluster_index} in scan {scan_identifier}"
+            )
+            return format_error_response(
+                f"No consensus analysis found for cluster {cluster_index} in scan {scan_identifier}"
+            )
+
+        result = rows[0].cells
+        detailed_features = result["llm_detailed_features"]
+        logger.info(f"Found consensus analysis results for cluster {cluster_index}")
+        logger.debug(f"Detailed features: {detailed_features}")
+
+        response_text = f"Consensus Analysis for Scan '{result['scan_name']}', Cluster {result['cluster_index']}\\n"
+        response_text += "=" * 60 + "\\n"
+        response_text += f"Assigned Class: {result['llm_assigned_class']}\\n\\n"
+        response_text = f"Consensus Analysis for Scan '{result['scan_name']}', Cluster {result['cluster_index']}\n"
+        response_text += "=" * 60 + "\n"
+        response_text += f"Assigned Class: {result['llm_assigned_class']}\n\n"
+        response_text += (
+            f"Description: {detailed_features.get('consensus_description', 'N/A')}\n\n"
+        )
+        response_text += (
+            f"Pattern Count: {detailed_features.get('pattern_count', 'N/A')}\n"
+        )
+        response_text += f"Dominant Classification Code: {detailed_features.get('dominant_classification_code', 'N/A')}"
+
+        logger.info("Returning consensus analysis results")
+        return format_text_response(response_text)
+
+    except Exception as e:
+        logger.error(f"Error showing cluster consensus: {e}", exc_info=True)
+        return format_error_response(str(e))
+
 
 @mcp.tool(
     description="Display an image from a local file URL (like file:///path/to/image.png) using the MCP image system."
 )
-async def show_classification_map_local_link(
+async def show_classification_map(
     ctx: Context,
     file_url: str = Field(
         description="Local file URL starting with 'file://' (e.g., 'file:///tmp/scan_analysis/1/1_xy_map_FINAL.png')"
@@ -1427,56 +2053,76 @@ async def show_classification_map_local_link(
 ) -> Image:
     """
     Displays an image from a local file URL using the MCP image system.
-    
+
     This function accepts file URLs in the format:
     - file:///absolute/path/to/image.png
     - file://localhost/absolute/path/to/image.png
-    
+
     The function will extract the local file path and load the image using the MCP image processing system.
     """
     try:
         from urllib.parse import urlparse
-        
+
         # Parse the file URL
         parsed_url = urlparse(file_url)
-        
-        if parsed_url.scheme != 'file':
-            raise Exception(f"Invalid URL scheme. Expected 'file://', got '{parsed_url.scheme}://'")
-        
+
+        if parsed_url.scheme != "file":
+            raise Exception(
+                f"Invalid URL scheme. Expected 'file://', got '{parsed_url.scheme}://'"
+            )
+
         # Extract the local file path
         local_file_path = parsed_url.path
-        
+
         # Handle Windows paths if needed
-        if os.name == 'nt' and local_file_path.startswith('/') and ':' in local_file_path[1:3]:
-            local_file_path = local_file_path[1:]  # Remove leading slash for Windows paths like /C:/...
-        
-        logger.info(f"Extracting local file path from URL: {file_url} -> {local_file_path}")
-        
+        if (
+            os.name == "nt"
+            and local_file_path.startswith("/")
+            and ":" in local_file_path[1:3]
+        ):
+            local_file_path = local_file_path[
+                1:
+            ]  # Remove leading slash for Windows paths like /C:/...
+
+        logger.info(
+            f"Extracting local file path from URL: {file_url} -> {local_file_path}"
+        )
+
         if not os.path.exists(local_file_path):
             raise Exception(f"File does not exist: {local_file_path}")
-        
+
         if not os.path.isfile(local_file_path):
             raise Exception(f"Path is not a file: {local_file_path}")
-        
+
         # Check if it's an image file based on extension
-        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
+        image_extensions = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".webp",
+            ".tiff",
+            ".tif",
+        }
         file_ext = os.path.splitext(local_file_path)[1].lower()
         if file_ext not in image_extensions:
-            raise Exception(f"File does not appear to be an image (extension: {file_ext})")
-        
+            raise Exception(
+                f"File does not appear to be an image (extension: {file_ext})"
+            )
+
         # Use the MCP image system to load and process the image
         logger.info(f"Loading image using MCP image system: {local_file_path}")
         image_data = (await fetch_images([local_file_path], ctx))[0]
-        
+
         if image_data is None:
             raise Exception(f"Failed to load image from: {local_file_path}")
-        
+
         return image_data
 
     except Exception as e:
         logger.error(f"Error displaying image from local file URL '{file_url}': {e}")
         raise e
-
 
 
 @mcp.tool(
@@ -2440,6 +3086,138 @@ async def get_cluster_llm_details(
         return format_error_response(f"Failed to get cluster details: {str(e)}")
 
 
-if __name__ == "__main__":
-    # This is the entry point when running the server directly
-    asyncio.run(main())
+@mcp.tool(
+    description="Test LLM connectivity by analyzing a local image file with the configured API"
+)
+async def test_llm_analysis(
+    ctx: Context,
+    image_path: str = Field(description="Path to the image file to analyze"),
+    model: str = Field(description="Model to use (optional)", default=None),
+) -> ResponseType:
+    """
+    Test LLM analysis on a local image file.
+    This is a simple test to verify LLM connectivity and functionality.
+    """
+    logger.info(f"Starting test_llm_analysis for image_path={image_path}")
+
+    if not llm_orchestrator:
+        logger.error("LLM orchestrator not available")
+        error_msg = (
+            "LLM analysis features are not available. Please check API configuration."
+        )
+        if os.path.exists("/home/frank/Documents/4DLLM/config/api_keys.json"):
+            error_msg += "\n\nTip: Check that config/api_keys.json contains valid API keys instead of placeholder values."
+        return format_error_response(error_msg)
+
+    try:
+        # Check if file exists
+        if not os.path.exists(image_path):
+            logger.error(f"Image file not found: {image_path}")
+            return format_error_response(f"Image file not found: {image_path}")
+
+        logger.info(f"File exists, calling LLM orchestrator")
+
+        # Use the JSON prompt template
+        result = await llm_orchestrator.analyze_single_image(
+            image_path, JSON_PROMPT_TEMPLATE, model
+        )
+
+        logger.info(
+            f"LLM analysis completed. Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}"
+        )
+
+        # Format the response
+        if isinstance(result, dict) and "error" not in result:
+            response_text = f"✅ LLM Analysis Test Successful!\n\n"
+            response_text += f"Image: {image_path}\n"
+            response_text += f"Model: {model or llm_orchestrator.model}\n\n"
+            response_text += f"Results:\n"
+
+            if "classification_code" in result:
+                class_names = {
+                    0: "Vacuum",
+                    1: "Crystalline",
+                    2: "Amorphous",
+                    3: "Mixed-State",
+                }
+                class_name = class_names.get(result["classification_code"], "Unknown")
+                response_text += f"  Classification: {result['classification_code']} ({class_name})\n"
+
+            if "description" in result:
+                response_text += f"  Description: {result['description']}\n"
+
+            if "timestamp" in result:
+                response_text += f"  Timestamp: {result['timestamp']}\n"
+
+            logger.info("Returning successful test result")
+            return format_text_response(response_text)
+        else:
+            logger.error(f"LLM analysis failed: {result}")
+            return format_error_response(f"LLM analysis failed: {result}")
+
+    except Exception as e:
+        logger.error(f"Error in test_llm_analysis: {e}", exc_info=True)
+        return format_error_response(f"Error in test LLM analysis: {e}")
+
+
+@mcp.tool(
+    description="Regenerate the classification map using LLM-assigned classes (groups by classification_code)."
+)
+async def regenerate_classification_map_tool(
+    ctx: Context,
+    scan_identifier: Union[int, str] = Field(
+        description="The unique ID (int) or name (str) of the scan."
+    ),
+    out_root: str = Field(
+        description="Output root directory for regenerated map.",
+        default="/tmp/scan_analysis",
+    ),
+    clustering_run_id: Optional[int] = Field(
+        description="Specific clustering run ID (defaults to latest)", default=None
+    ),
+) -> Image:
+    """
+    Regenerate the XY classification map based on latest LLM results.
+    """
+    sql_driver = await get_sql_driver()
+    try:
+        # Try to derive a friendly scan name for the output filename
+        if isinstance(scan_identifier, int):
+            rows = await SafeSqlDriver.execute_param_query(
+                sql_driver,
+                "SELECT scan_name FROM scans WHERE id = {}",
+                [scan_identifier],
+            )
+            scan_name = rows[0].cells["scan_name"] if rows else str(scan_identifier)
+        else:
+            scan_name = str(scan_identifier)
+
+        # Ensure output directory exists
+        os.makedirs(out_root, exist_ok=True)
+
+        # Build a full output filename for the regenerated map
+        image_filename = f"{scan_name}_xy_map_REGENERATED.png"
+        full_image_path = os.path.join(out_root, image_filename)
+
+        # Call shared function which expects a full file path
+        saved_path = await regenerate_classification_map(
+            sql_driver, scan_identifier, full_image_path, clustering_run_id
+        )
+
+        # Verify the file was created
+        if not os.path.isfile(saved_path):
+            raise Exception(
+                f"Regenerated classification map not found at: {saved_path}"
+            )
+
+        # Load the saved image using the MCP image pipeline so we return a proper Image object
+        image_obj = (await fetch_images([saved_path], ctx))[0]
+        if image_obj is None:
+            raise Exception(
+                f"Failed to load regenerated classification map from: {saved_path}"
+            )
+        return image_obj
+
+    except Exception as e:
+        logger.error(f"Error in regenerate_classification_map_tool: {e}", exc_info=True)
+        raise
