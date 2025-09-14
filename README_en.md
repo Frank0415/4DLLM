@@ -1,12 +1,26 @@
-# 4DLLM - 4DSTEM Material Analysis Tool
+# 4DLLM
 
-A core classification, data analysis, and relationship-building tool for microscopic materials tailored to 4DSTEM.
+[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
+[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
+[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
+)](https://opensource.org/licenses/MIT)
 
----
+**Language**: English | [中文 / Chinese](README.md)
 
-This project uses [postgres-mcp](https://github.com/crystaldba/postgres-mcp), with the original license available at [LICENSE-postgres-mcp](LICENSES/LICENSE-postgres-mcp).
+A powerful, database-centric MCP Server for automating the processing, analysis, and interpretation of 4D-STEM data. It integrates K-Means clustering, Large Language Model (LLM) semantic analysis, and crystallographic simulation (CIF) workflows, with PostgreSQL ensuring full traceability of all results.
 
-## Structure
+## ✨ Core Features
+
+*   **🔧 End-to-End Workflow**: Full automation from raw `.mib` files to LLM-generated semantic tags and crystal structure identification.
+*   **🧠 LLM Integration**: Leverages Large Language Models (e.g., GPT-4) to provide human-readable consensus descriptions and classification tags for diffraction pattern clusters.
+*   **🏗️ Database-Centric**: All data, parameters, and results are stored in PostgreSQL, guaranteeing reproducible analysis and perfect traceability.
+*   **⚡ MCP Protocol Support**: As a standard MCP Server, it integrates seamlessly with any MCP client (like Claude.ai, Cursor), dramatically enhancing research efficiency.
+*   **🔬 Domain Expert Design**: Designed for materials scientists and electron microscopists, offering specialized features like CIF simulation and comparison.
+
+## 🏗️ Structure
 
 <div align="center">
   <picture>
@@ -17,108 +31,65 @@ This project uses [postgres-mcp](https://github.com/crystaldba/postgres-mcp), wi
   </picture>
 </div>
 
-## Quick Start
+## 🔬 Results
 
-### 1. Environment Setup
+<div align="center">
+  <picture>
+      <img src="assets/results.jpg" width="80%" alt="ckpt-engine">
+  </picture>
+</div>
 
-Ensure the following dependencies are installed:
+## 🚀 Quick Start
+
+### Prerequisites
+Ensure you have the following installed:
 - Python 3.13+
-- PostgreSQL 17+
-- Docker (recommended for database)
-- uv package manager
+- Docker and Docker Compose
+- UV package manager
 
-### 2. Database Setup
+### Installation & Setup
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/Frank0415/4DLLM.git
+    cd 4DLLM
+    ```
 
-```bash
-# Start database containers
-docker-compose up -d
+2.  **Sync dependencies with UV**:
+    ```bash
+    uv sync
+    ```
 
-# Initialize database tables
-python init_enhanced_db.py
-```
+3.  **Start the database**:
+    ```bash
+    docker-compose -f docker/docker-compose.yml up -d
+    ```
 
-### 3. Configuration
+4.  **Initialize the database schema**:
+    ```bash
+    python setup_database.py
+    ```
 
-Copy and edit configuration files:
-```bash
-cp config/database.json.example config/database.json
-cp config/api_keys.json.example config/api_keys.json
-```
+5.  **Configure API keys and database credentials**:
+    ```bash
+    cp config/db_config_example.json config/database.json
+    cp config/api_keys_example.json config/api_keys.json
+    ```
+    Fill in database credentials in `config/database.json` and configure LLM API keys in `config/api_keys.json`.
 
-Fill in database credentials in `config/database.json` and configure LLM API keys in `config/api_keys.json`.
+## 📖 Documentation
 
-## Core Features
+For comprehensive guides and available MCP tools, please refer to our [**full documentation**](docs/documentation.md).
 
-### Data Processing Workflow
+## 📜 License
 
-1. **Data Import**: Convert raw .mib files to .mat format and store in database
-2. **Clustering Analysis**: Use K-Means for unsupervised classification of diffraction patterns
-3. **LLM Analysis**: Semantic analysis of clustering results using large language models
-4. **Result Storage**: Persist analysis results to database
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
-### Command Line Tools
+## 🙏 Acknowledgments
 
-```bash
-# Import data
-python main_pipeline_import.py /path/to/data.mib
+This project is built upon and inspired by several incredible open-source projects. We are deeply grateful to their creators:
+- **[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)** (MIT) - The foundation of our MCP Server.
+- **[ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)** (MIT) - For image handling capabilities.
+- **[blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)** (Apache-2.0) - Inspiration for our related [4DLLM-arxiv-mcp-server](https://github.com/Frank0415/4DLLM-arxiv-mcp-server).
 
-# Clustering analysis
-python helper/analyze_scan_cli.py --scan-id 1 --k-clusters 16
-
-# LLM analysis
-python enhanced_llm_analysis_pipeline.py scan_name
-```
-
-## Project Structure
-
-```
-4DLLM/
-├── config/                 # Configuration files
-├── helper/                 # Command line tools
-├── postgres_mcp/          # Database related modules
-├── api_manager/           # API key management
-├── docker/                # Docker configuration
-├── Data/                  # Processed data files
-├── Raw/                   # Raw data files
-└── llm_analysis_outputs/  # LLM analysis results
-```
-
-## Database Design
-
-The database includes the following core tables:
-- `scans`: Scan experiment metadata
-- `raw_mat_files`: Raw .mat file references
-- `diffraction_patterns`: Basic diffraction point data
-- `clustering_runs`: Clustering experiment logs
-- `identified_clusters`: Identified cluster information
-- `pattern_cluster_assignments`: Point-to-cluster assignments
-- `llm_analyses`: LLM analysis results
-- `llm_analysis_results`: Final analysis results
-
-## Development Guide
-
-### Adding New Features
-
-1. Create a new branch for development
-2. Implement the feature and add corresponding tests
-3. Update documentation
-4. Submit a Pull Request
-
-### Database Modifications
-
-To modify the database structure:
-1. Update `enhanced_unified_database_schema.sql`
-2. Modify the SQL statement in `init_enhanced_db.py`
-3. Run `python init_enhanced_db.py` to reinitialize the database
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Failed**: Check if Docker containers are running and verify database credentials
-2. **LLM API Errors**: Check API key configuration and ensure network connectivity
-3. **Insufficient Memory**: Reduce batch size or switch to CPU processing
-
-### Getting Help
-
-If you encounter issues, please refer to the relevant documentation or submit an Issue.
+---
+*Disclaimer: This project is a research platform and may require domain-specific expertise (4D-STEM, materials science) to use effectively.*

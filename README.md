@@ -1,12 +1,26 @@
-# 4DLLM - 4DSTEM 材料分析工具
+# 4DLLM
 
-面向4DSTEM的微观材料核心分类、数据分析与关系构建工具。
+[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
+[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
+[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
+)](https://opensource.org/licenses/MIT)
 
-此项目使用了 [postgres-mcp](https://github.com/crystaldba/postgres-mcp), 原始许可证位于 [LICENSE-postgres-mcp](LICENSES/LICENSE-postgres-mcp)。
+**语言**: [English](README_en.md) | 中文
 
----
+一个强大的、基于数据库的 MCP 服务器，用于自动化处理、分析和解释 4D-STEM 数据。它集成了 K-Means 聚类、大型语言模型 (LLM) 语义分析和晶体学模拟 (CIF) 工作流，并通过 PostgreSQL 确保所有分析结果的完整可追溯性。
 
-## 项目架构图
+## ✨ 核心特性
+
+*   **🔧 端到端工作流**: 从原始 `.mib` 文件到 LLM 生成的语义标签和晶体结构识别，全流程自动化。
+*   **🧠 LLM 集成**: 利用大语言模型（如 GPT-4）为衍射图案聚类提供人类可读的共识描述和分类标签。
+*   **🏗️ 数据库中心化**: 所有数据、参数和结果均存储在 PostgreSQL 中，保证分析的可重复性和完美溯源。
+*   **⚡ MCP 协议支持**: 作为标准 MCP 服务器，可与 Claude.ai、Cursor 等任何 MCP 客户端无缝集成，极大提升研究效率。
+*   **🔬 领域专家设计**: 专为材料科学和电子显微镜研究者设计，提供 CIF 模拟与对比等专业功能。
+  
+## 🔧 项目架构图
 
 <div align="center">
   <picture>
@@ -17,7 +31,7 @@
   </picture>
 </div>
 
-## 解析结果
+## 🔬 解析结果
 
 <div align="center">
   <picture>
@@ -31,108 +45,57 @@
 - MCP自动化显著减少人工工作量，提高效率
 - 数据库化存储与管理，便于后续分析与扩展
 
-## 快速开始
+## 🚀 快速开始
 
-### 1. 环境准备
-
-确保已安装以下依赖：
+### 环境要求
+请确保你的系统已安装：
 - Python 3.13+
-- PostgreSQL 17+
-- Docker (推荐用于数据库)
-- uv 包管理器
+- Docker 和 Docker Compose
+- UV 包管理器
 
-### 2. 数据库设置
+### 安装与设置
+1.  **克隆仓库**:
+    ```bash
+    git clone https://github.com/Frank0415/4DLLM.git
+    cd 4DLLM
+    ```
 
-```bash
-# 启动数据库容器
-docker-compose up -d
+2.  **使用 UV 安装依赖**:
+    ```bash
+    uv sync
+    ```
 
-# 初始化数据库表
-python init_enhanced_db.py
-```
+3.  **启动数据库**:
+    ```bash
+    docker-compose -f docker/docker-compose.yml up -d
+    ```
 
-### 3. 配置文件
+4.  **初始化数据库结构**:
+    ```bash
+    python setup_database.py
+    ```
 
-复制并编辑配置文件：
-```bash
-cp config/database.json.example config/database.json
-cp config/api_keys.json.example config/api_keys.json
-```
+5.  **配置 LLM API 密钥和数据库凭证**:
+    ```bash
+    cp config/db_config_example.json config/database.json
+    cp config/api_keys_example.json config/api_keys.json
+    ```
+    在 `config/database.json` 中填写数据库凭证，在 `config/api_keys.json` 中配置LLM API密钥。
 
-在 `config/database.json` 中填入数据库凭据，在 `config/api_keys.json` 中配置LLM API密钥。
+## 📖 文档
 
-## 核心功能
+请参阅我们的[**完整文档**](docs/documentation_zh.md)以获取全面的使用指南和 MCP 工具列表。
 
-### 数据处理流程
+## 📜 许可证
 
-1. **数据导入**: 将原始 .mib 文件转换为 .mat 格式并存入数据库
-2. **聚类分析**: 使用 K-Means 对衍射图案进行无监督分类
-3. **LLM分析**: 利用大语言模型对聚类结果进行语义分析
-4. **结果存储**: 将分析结果持久化到数据库
+本项目采用 **MIT 许可证** - 详见 [LICENSE](LICENSE) 文件。
 
-### 命令行工具
+## 🙏 致谢
 
-```bash
-# 导入数据
-python main_pipeline_import.py /path/to/data.mib
+本项目的开发建立在以下优秀开源项目的基础之上。我们向其创作者表示深切感谢：
+- **[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)** (MIT) - MCP服务器框架。
+- **[ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)** (MIT) - 图像处理功能。
+- **[blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)** (Apache-2.0) - 用于ArXiv论文分析的MCP服务器。
 
-# 聚类分析
-python helper/analyze_scan_cli.py --scan-id 1 --k-clusters 16
-
-# LLM分析
-python enhanced_llm_analysis_pipeline.py scan_name
-```
-
-## 项目结构
-
-```
-4DLLM/
-├── config/                 # 配置文件
-├── helper/                 # 命令行工具
-├── postgres_mcp/          # 数据库相关模块
-├── api_manager/           # API密钥管理
-├── docker/                # Docker配置
-├── Data/                  # 处理后的数据文件
-├── Raw/                   # 原始数据文件
-└── llm_analysis_outputs/  # LLM分析结果
-```
-
-## 数据库设计
-
-数据库包含以下核心表：
-- `scans`: 扫描实验元数据
-- `raw_mat_files`: 原始.mat文件引用
-- `diffraction_patterns`: 基础衍射点数据
-- `clustering_runs`: 聚类实验日志
-- `identified_clusters`: 识别出的聚类信息
-- `pattern_cluster_assignments`: 点到聚类的分配关系
-- `llm_analyses`: LLM分析结果
-- `llm_analysis_results`: 最终分析结果
-
-## 开发指南
-
-### 添加新功能
-
-1. 创建新分支进行开发
-2. 实现功能并添加相应测试
-3. 更新文档
-4. 提交Pull Request
-
-### 数据库修改
-
-如需修改数据库结构：
-1. 更新 `enhanced_unified_database_schema.sql`
-2. 修改 `init_enhanced_db.py` 中的SQL语句
-3. 运行 `python init_enhanced_db.py` 重新初始化数据库
-
-## 故障排除
-
-### 常见问题
-
-1. **数据库连接失败**: 检查Docker容器是否正在运行，确认数据库凭据正确
-2. **LLM API错误**: 检查API密钥配置，确认网络连接正常
-3. **内存不足**: 减少批处理大小或切换到CPU处理
-
-### 获取帮助
-
-如遇到问题，请查看相关文档或提交Issue。
+---
+*免责声明: 本项目是一个研究平台，有效使用可能需要领域专业知识（4D-STEM，材料科学）。*
