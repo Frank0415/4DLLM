@@ -1,4 +1,14 @@
-# 4D-STEM研究平台
+[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
+[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
+[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
+[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
+)](https://opensource.org/licenses/MIT)
+
+# 4DLLM
+
+一个基于 MCP 协议的自动化 4DSTEM 显微材料分析平台。
 
 ## 概述
 
@@ -75,36 +85,78 @@ cp config/api_keys_example.json config/api_keys.json
 5. **图案对比**：对比实验和模拟图案进行识别
 6. **结果存储**：将所有分析结果持久化到数据库
 
-### 命令行工具
+### 可用的工具
 
-```bash
-# 导入数据
-python main_pipeline_import.py /path/to/data.mib
+#### 1. 数据库管理工具
 
-# 聚类分析
-python helper/analyze_scan_cli.py --scan-id 1 --k-clusters 16
+| 工具 | 描述 |
+|:------|:------|
+| **`list_schemas`** | 列出数据库中的所有模式(schema) |
+| **`list_objects`** | 列出指定模式中的对象 |
+| **`get_object_details`** | 显示特定数据库对象的详细信息 |
+| **`execute_sql`** | 执行任意 SQL 查询 |
 
-# LLM分析
-python enhanced_llm_analysis_pipeline.py scan_name
+#### 2. 扫描分析工具
 
-# CIF管理
-python cif_analysis/cif_manager.py --download http://www.crystallography.net/cod/1572953.cif
+| 工具 | 描述 |
+|:------|:------|
+| **`analyze_scan_tool`** | 对 4D-STEM 扫描运行聚类分析 |
+| **`display_classification_results`** | 显示已完成分析的扫描的分类结果 |
+| **`verify_cluster_storage_tool`** | 验证指定扫描的聚类分配是否存储在数据库中 |
+| **`regenerate_classification_map_tool`** | 使用 LLM 分配的类别重新生成分类图 |
+| **`show_classification_map`** | 通过本地文件 URL 显示分类图 |
+| **`list_classification_images`** | 列出扫描中所有可用的分类图像和映射 |
+| **`show_classification_overview`** | 显示扫描的全面分类概览(包含对应的映射和样品蒙太奇) |
 
-# 图案模拟
-python cif_analysis/simulate_patterns.py --cif-id 1 --count 100
+#### 3. 扫描导入与信息检索工具
 
-# 图案对比
-python cif_analysis/compare_patterns.py --scan-id 1 --cif-id 1
-```
+| 工具 | 描述 |
+|:------|:------|
+| **`ingest_scan_from_mib`** | 处理 .mib 文件，解压为多个 .mat 文件，并将扫描信息录入目录数据库 |
+| **`list_ingested_scans`** | 列出所有已导入的科学扫描的高级摘要 |
+| **`get_scan_details`** | 获取指定扫描中的原始 .mat 文件的详细列表 |
+
+#### 4. 原始图像处理工具
+
+| 工具 | 描述 |
+|:------|:------|
+| **`show_raw_image`** | 根据图像所在的 .mat 文件、图像编号和扫描 ID 显示原始图像，并附带 LLM 分析标签 |
+
+#### 5. 聚类分析与 LLM 工具
+
+| 工具 | 描述 |
+|:------|:------|
+| **`generate_cluster_consensus_tool`** | 利用 LLM 为一次扫描中的所有聚类生成共识描述 |
+| **`show_cluster_consensus`** | 显示一次扫描中特定聚类的共识描述 |
+| **`show_cluster_montages`** | 显示一次扫描中特定聚类的代表性衍射图案蒙太奇 |
+| **`run_llm_cluster_analysis`** | 对一次特定扫描中经过聚类的衍射图样运行基于 LLM 的分析 |
+| **`get_llm_analysis_summary`** | 获取一次特定扫描上所有 LLM 分析的摘要 |
+| **`get_cluster_llm_details`** | 获取一个特定聚类的详细 LLM 分析结果 |
+
+#### 6. CIF 文件处理工具
+
+| 工具 | 描述 |
+|:------|:------|
+| **`download_cif_file`** | 从晶体数据库下载 CIF 文件并存储到数据库 |
+| **`upload_cif_file`** | 上传本地 CIF 文件到数据库 |
+| **`generate_simulated_patterns`** | 从 CIF 文件生成模拟的衍射图案 |
+| **`compare_patterns`** | 比较实验衍射图案与从 CIF 文件生成的模拟图案 |
+
+#### 7. LLM 连接性与测试工具
+
+| 工具 | 描述 |
+|:------|:------|
+| **`test_llm_analysis`** | 通过分析本地图像文件测试 LLM 连接性 |
+
 
 ## 项目结构
 
 ```
-4DSTEM_研究平台/
+4DLLM/
 ├── config/                 # 配置文件
 ├── helper/                 # 命令行工具
-├── postgres_mcp/          # 数据库相关模块
-├── api_manager/           # API密钥管理
+├── postgres_mcp/           # 数据库相关模块
+├── api_manager/            # API密钥管理
 ├── docker/                 # Docker配置
 ├── cif_analysis/           # CIF分析模块
 ├── SQL/                    # 数据库架构
@@ -154,6 +206,32 @@ python cif_analysis/compare_patterns.py --scan-id 1 --cif-id 1
 - 领域特定类别（phase_type、crystallinity_level等）
 - 置信度评分用于不确定性量化
 - 统计视图用于标记分析
+
+## 开源许可与致谢
+
+### 核心项目
+- **4DLLM**: 本项目已在 GitHub 上开源。
+  - **代码仓库**: [https://github.com/Frank0415/4DLLM](https://github.com/Frank0415/4DLLM)
+  - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
+
+### 依赖的开源组件
+本项目的开发建立在以下优秀开源项目的基础之上：
+
+1.  **MCP 服务器框架**:
+    - 基于 [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) 构建。
+    - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
+
+2.  **图像处理功能**:
+    - 图片读取功能基于 [ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)。
+    - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
+
+### 相关项目
+- **4DLLM-arxiv-mcp-server**: 我们用于ArXiv论文分析的MCP服务器也已开源。
+  - **代码仓库**: [https://github.com/Frank0415/4DLLM-arxiv-mcp-server](https://github.com/Frank0415/4DLLM-arxiv-mcp-server)
+  - **基于项目**: [blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)
+  - **许可证**: [Apache-2.0 license](https://opensource.org/licenses/Apache-2.0)
+
+我们衷心感谢以上所有项目和贡献者。
 
 ## 故障排除
 
