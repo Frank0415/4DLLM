@@ -1,118 +1,47 @@
 import json
 import os
-import logging
-from typing import Dict, Any, Optional
+from pathlib import Path
+from urllib.parse import quote
 
-logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ConfigManager:
-    """
-    Manages database configuration loading from JSON files with a fallback mechanism.
-    """
+    def __init__(self, config_path=None):
+        self.project_root = PROJECT_ROOT
+        path = Path(config_path or os.environ.get("FOURDLLM_CONFIG", "config/database.json"))
+        self.primary_config_path = path if path.is_absolute() else PROJECT_ROOT / path
+        self.config = {}
 
-    def __init__(self, config_path: Optional[str] = None):
-        """
-        Initializes the ConfigManager.
+    def load_config(self):
+        candidates = [self.primary_config_path]
+        if self.primary_config_path == PROJECT_ROOT / "config/database.json":
+            candidates.append(PROJECT_ROOT / "config/db_config.json")
+        for path in candidates:
+            if path.is_file():
+                self.config = json.loads(path.read_text(encoding="utf-8"))
+                return
+        raise FileNotFoundError(f"Database configuration not found: {self.primary_config_path}")
 
-        Args:
-            config_path: Optional path to a specific config JSON file.
-        """
-        # 动态确定项目根目录，然后构建配置文件的标准路径
-        self.project_root = os.getcwd()
-
-        self.primary_config_path = os.path.join(self.project_root, config_path)
-        self.fallback_config_path = os.path.join(
-            self.project_root, "config", "db_config.json"
-        )
-        self.fallfallback_config_path = os.path.join(
-            self.project_root, "config", "db_config_example.json"
-        )
-        self.config: Dict[str, Any] = {}
-
-    def load_config(self) -> None:
-        """
-        Loads configuration from the primary path, falling back to the example if not found.
-        """
-        print(os.path.join(self.project_root, "config", self.primary_config_path))
-        if os.path.exists(self.primary_config_path):
-            logger.info(
-                f"Loading database configuration from: {self.primary_config_path}"
-            )
-            with open(self.primary_config_path, "r") as f:
-                self.config = json.load(f)
-        elif os.path.exists(os.path.join(self.project_root, self.primary_config_path)):
-            logger.warning(
-                f"Primary config not found. Falling back to: {os.path.join(self.project_root, self.primary_config_path)}"
-            )
-            with open(
-                os.path.join(self.project_root, self.primary_config_path), "r"
-            ) as f:
-                self.config = json.load(f)
-        elif os.path.exists(self.fallback_config_path):
-            logger.warning(
-                f"Primary config not found. Falling back to: {self.fallback_config_path}"
-            )
-            with open(self.fallback_config_path, "r") as f:
-                self.config = json.load(f)
-        elif os.path.exists(self.fallfallback_config_path):
-            logger.warning(
-                f"Primary and fallback config not found. Falling back to example: {self.fallfallback_config_path}"
-            )
-            with open(self.fallfallback_config_path, "r") as f:
-                self.config = json.load(f)
-        else:
-            raise FileNotFoundError(
-                "No database configuration file found. Please create 'config/db_config.json' or 'config/db_config_example.json'."
-            )
-
-    def get_database_url(self) -> Optional[str]:
-        """
-        Constructs the DATABASE_URI connection string from the loaded config.
-        """
+    def get_database_url(self):
+        if os.environ.get("DATABASE_URI"):
+            return os.environ["DATABASE_URI"]
         if not self.config:
             self.load_config()
+        required = ("user", "password", "host", "port", "dbname")
+        missing = [key for key in required if key not in self.config]
+        if missing:
+            raise ValueError(f"Missing database settings: {', '.join(missing)}")
+        cfg = self.config
+        host = str(cfg["host"])
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return (f"postgresql://{quote(str(cfg['user']), safe='')}:"
+                f"{quote(str(cfg['password']), safe='')}@{host}:{int(cfg['port'])}/"
+                f"{quote(str(cfg['dbname']), safe='')}")
 
-        required_keys = ["user", "password", "host", "port", "dbname"]
-        print(self.config)
-        if not all(key in self.config for key in required_keys):
-            logger.error(
-                "Configuration file is missing one or more required keys: "
-                + ", ".join(required_keys)
-            )
-            return None
-
-        return (
-            f"postgresql://{self.config['user']}:{self.config['password']}@"
-            f"{self.config['host']}:{self.config['port']}/{self.config['dbname']}"
-        )
-
-    def get_api_keys(self) -> Optional[Dict[str, Any]]:
-        """
-        Loads API keys from api_keys.json configuration file.
-
-        Returns:
-            Dictionary containing API keys, or None if file not found
-        """
-        api_keys_path = os.path.join(self.project_root, "config", "api_keys.json")
-        fallback_api_keys_path = os.path.join(
-            self.project_root, "api_manager", "api_keys.json"
-        )
-
-        try:
-            if os.path.exists(api_keys_path):
-                logger.info(f"Loading API keys from: {api_keys_path}")
-                with open(api_keys_path, "r") as f:
-                    return json.load(f)
-            elif os.path.exists(fallback_api_keys_path):
-                logger.info(f"Loading API keys from fallback: {fallback_api_keys_path}")
-                with open(fallback_api_keys_path, "r") as f:
-                    return json.load(f)
-            else:
-                logger.warning(
-                    "No API keys file found. LLM analysis features will not be available."
-                )
-                return None
-        except Exception as e:
-            logger.error(f"Failed to load API keys: {e}")
-            return None
+    def get_api_keys(self):
+        for path in (PROJECT_ROOT / "config/api_keys.json", PROJECT_ROOT / "api_manager/api_keys.json"):
+            if path.is_file():
+                return json.loads(path.read_text(encoding="utf-8"))
+        return None

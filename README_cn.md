@@ -1,101 +1,67 @@
 # 4DLLM
 
-[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
-[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
-[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
-)](https://opensource.org/licenses/MIT)
+中文 · [English](README.md)
 
-**语言**: [English](README_en.md) | 中文
+本地浏览器中的 4D-STEM 数据工作台。导入、聚类和 LLM 分析由同一套 Python 核心实现，浏览器、CLI 和 MCP 共用。
 
-一个强大的、基于数据库的 MCP 服务器，用于自动化处理、分析和解释 4D-STEM 数据。它集成了 K-Means 聚类、大型语言模型 (LLM) 语义分析和晶体学模拟 (CIF) 工作流，并通过 PostgreSQL 确保所有分析结果的完整可追溯性。
+- 选择单个 MIB 文件或目录，保留配套 HDR，完成转换与入库。
+- 查看扫描总强度图和聚类空间图，点击坐标查看原始衍射图案。
+- 在 CPU 或 CUDA 上运行极坐标特征提取、PCA 和 K-Means。
+- 每次聚类保留独立的参数、结果目录和历史记录。
+- 可选的 Gemini 兼容 LLM 建议，与人工确认分别保存。
+- 查看任务进度、日志和报告，取消或重新提交任务。
 
-## ✨ 核心特性
+## 启动
 
-*   **🔧 端到端工作流**: 从原始 `.mib` 文件到 LLM 生成的语义标签和晶体结构识别，全流程自动化。
-*   **🧠 LLM 集成**: 利用大语言模型（如 GPT-4）为衍射图案聚类提供人类可读的共识描述和分类标签。
-*   **🏗️ 数据库中心化**: 所有数据、参数和结果均存储在 PostgreSQL 中，保证分析的可重复性和完美溯源。
-*   **⚡ MCP 协议支持**: 作为标准 MCP 服务器，可与 Claude.ai、Cursor 等任何 MCP 客户端无缝集成，极大提升研究效率。
-*   **🔬 领域专家设计**: 专为材料科学和电子显微镜研究者设计，提供 CIF 模拟与对比等专业功能。
-  
-## 🔧 项目架构图
+需要 Python 3.13+、[uv](https://docs.astral.sh/uv/)、PostgreSQL 17+。首次构建页面需要 Node.js 和 npm。
 
-<div align="center">
-  <picture>
-      <img src="assets/struct_1.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-  <picture>
-      <img src="assets/struct_2.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-</div>
+```bash
+git clone git@github.com:Frank0415/4DLLM.git
+cd 4DLLM
+./run.sh
+```
 
-## 🔬 解析结果
+启动脚本首次运行时构建页面，并打开 `http://127.0.0.1:8765`。如果首次启动时已有 Docker，会启动仓库提供的 PostgreSQL；否则在页面的“设置”中连接已有数据库。数据库本身须事先创建，工作台负责建表和升级，保留已有扫描与结果。
 
-<div align="center">
-  <picture>
-      <img src="assets/results.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-</div>
+仓库内数据库默认账号为 `postgres`、密码为 `1234`、数据库为 `4dllm`，与数据库配置示例一致。真实数据库配置和 API 密钥不进入 Git。
 
-相较传统（人工标定+监督训练）方法：
-- 大幅提高分类颗粒度与准确度
-- 发现更多材料特征
-- MCP自动化显著减少人工工作量，提高效率
-- 数据库化存储与管理，便于后续分析与扩展
+```bash
+# 单独启动数据库
+docker compose -f docker/docker-compose.yml up -d postgres_db
 
-## 🚀 快速开始
+# 自定义端口，不自动打开浏览器
+./run.sh --no-browser --port 8765
 
-### 环境要求
-请确保你的系统已安装：
-- Python 3.13+
-- Docker 和 Docker Compose
-- UV 包管理器
+# 原有 MCP 入口
+uv run --locked python main.py --config config/database.json
+```
 
-### 安装与设置
-1.  **克隆仓库**:
-    ```bash
-    git clone https://github.com/Frank0415/4DLLM.git
-    cd 4DLLM
-    ```
+## 使用流程
 
-2.  **使用 UV 安装依赖**:
-    ```bash
-    uv sync
-    ```
+1. 在“设置”中填写 PostgreSQL，并指定允许浏览的数据目录。
+2. 在“导入扫描”中选择 MIB，查看预览和元数据，确认行列数后导入。“导入整个目录”处理当前目录中的 MIB 文件，不递归子目录。
+3. 在“扫描与分析”中选择 K、随机种子和计算设备，运行聚类。
+4. 选择历史运行，查看各簇代表图案，下载聚类数组与参数。
+5. 如需 LLM 建议，配置密钥后提交分析；人工类别与备注单独保存。
 
-3.  **启动数据库**:
-    ```bash
-    docker-compose -f docker/docker-compose.yml up -d
-    ```
+支持 MIB 的 `U08`、`U16`、`U32` 存储格式，以及 `1x1`、`2x2`、`2x2G` 探测器布局。暂不支持打包的 `R64`。扫描行数乘列数必须与帧数相等；配套 `.hdr` 应与 `.mib` 放在一起，缺少尺寸时可手动填写。
 
-4.  **初始化数据库结构**:
-    ```bash
-    python setup_database.py
-    ```
+聚类编号只代表无监督分组。真空、晶体、非晶和混合类别来自 LLM 建议或人工确认，不按簇编号自动生成。
 
-5.  **配置 LLM API 密钥和数据库凭证**:
-    ```bash
-    cp config/db_config_example.json config/database.json
-    cp config/api_keys_example.json config/api_keys.json
-    ```
-    在 `config/database.json` 中填写数据库凭证，在 `config/api_keys.json` 中配置LLM API密钥。
+## 数据与结果
 
-## 📖 文档
+新导入的数据、分析结果和任务记录默认保存到 `workspace/`，与代码分开。已有数据库中的文件路径继续有效。
 
-请参阅我们的[**完整文档**](docs/documentation_zh.md)以获取全面的使用指南和 MCP 工具列表。
+- `FOURDLLM_DATA_DIR`：修改数据和任务保存目录。
+- `FOURDLLM_CONFIG`：指定数据库配置文件。
+- `DATABASE_URI`：直接提供数据库连接，优先于配置文件。
 
-## 📜 许可证
+任务采用串行队列和独立 Python 工作进程。刷新或关闭浏览器不会停止任务；取消请求在当前计算步骤或网络请求结束后的检查点生效。应用重启后继续处理排队任务，不从失败步骤自动恢复。
 
-本项目采用 **MIT 许可证** - 详见 [LICENSE](LICENSE) 文件。
+CIF 管理与模拟保留在 MCP 中，可通过 `uv sync --extra simulation` 安装模拟依赖。CIF 图案比较当前未实现，返回 `not_implemented`。
 
-## 🙏 致谢
+详见[完整文档](docs/documentation_zh.md)与 [CLI 说明](helper/CLI_TOOLS.md)。
 
-本项目的开发建立在以下优秀开源项目的基础之上。我们向其创作者表示深切感谢：
-- **[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)** (MIT) - MCP服务器框架。
-- **[ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)** (MIT) - 图像处理功能。
-- **[blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)** (Apache-2.0) - 用于ArXiv论文分析的MCP服务器。
+## 许可与致谢
 
----
-*免责声明: 本项目是一个研究平台，有效使用可能需要领域专业知识（4D-STEM，材料科学）。*
+MIT，见 [LICENSE](LICENSE)。项目包含 [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) 与 [ia-programming/mcp-images](https://github.com/ia-programming/mcp-images) 的工作，保留了 [LICENSES](LICENSES) 中的原始许可声明。

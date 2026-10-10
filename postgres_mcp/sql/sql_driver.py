@@ -1,6 +1,8 @@
 """SQL driver adapter for PostgreSQL connections."""
 
 import logging
+from contextlib import asynccontextmanager
+from psycopg import sql
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -137,7 +139,7 @@ class DbConnPool:
 
 
 class SqlDriver:
-    """Adapter class that wraps a PostgreSQL connection with the interface expected by DTA."""
+    """PostgreSQL queries and transaction-scoped bulk writes."""
 
     @dataclass
     class RowResult:
@@ -221,52 +223,42 @@ class SqlDriver:
 
             raise e
 
-    async def _execute_with_connection(self, connection, query, params, force_readonly) -> Optional[List[RowResult]]:
-        """Execute query with the given connection."""
-        transaction_started = False
-        try:
+    async def _execute_with_connection(self, connection, query, params, force_readonly):
+        async with connection.transaction():
             async with connection.cursor(row_factory=dict_row) as cursor:
-                # Start read-only transaction
                 if force_readonly:
-                    await cursor.execute("BEGIN TRANSACTION READ ONLY")
-                    transaction_started = True
-
-                if params:
-                    await cursor.execute(query, params)
-                else:
-                    await cursor.execute(query)
-
-                # For multiple statements, move to the last statement's results
+                    await cursor.execute("SET TRANSACTION READ ONLY")
+                await cursor.execute(query, params)
                 while cursor.nextset():
                     pass
-
-                if cursor.description is None:  # No results (like DDL statements)
-                    if not force_readonly:
-                        await cursor.execute("COMMIT")
-                    elif transaction_started:
-                        await cursor.execute("ROLLBACK")
-                        transaction_started = False
+                if cursor.description is None:
                     return None
+                return [self.RowResult(cells=dict(row)) for row in await cursor.fetchall()]
 
-                # Get results from the last statement only
-                rows = await cursor.fetchall()
+    @asynccontextmanager
+    async def transaction(self):
+        if self.conn is None:
+            self.connect()
+        if self.is_pool:
+            pool = await self.conn.pool_connect()
+            async with pool.connection() as connection:
+                async with connection.transaction():
+                    yield SqlDriver(conn=connection)
+        else:
+            async with self.conn.transaction():
+                yield self
 
-                # End the transaction appropriately
-                if not force_readonly:
-                    await cursor.execute("COMMIT")
-                elif transaction_started:
-                    await cursor.execute("ROLLBACK")
-                    transaction_started = False
+    async def copy_rows(self, table, columns, rows):
+        statement = sql.SQL("COPY {} ({}) FROM STDIN").format(
+            sql.Identifier(table), sql.SQL(", ").join(map(sql.Identifier, columns))
+        )
+        async with self.transaction() as driver:
+            async with driver.conn.cursor() as cursor:
+                async with cursor.copy(statement) as copy:
+                    for row in rows:
+                        await copy.write_row(row)
 
-                return [SqlDriver.RowResult(cells=dict(row)) for row in rows]
-
-        except Exception as e:
-            # Try to roll back the transaction if it's still active
-            if transaction_started:
-                try:
-                    await connection.rollback()
-                except Exception as rollback_error:
-                    logger.error(f"Error rolling back transaction: {rollback_error}")
-
-            logger.error(f"Error executing query ({query}): {e}")
-            raise e
+    async def execute_many(self, query, rows):
+        async with self.transaction() as driver:
+            async with driver.conn.cursor() as cursor:
+                await cursor.executemany(query, rows)

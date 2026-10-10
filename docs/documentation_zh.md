@@ -1,250 +1,94 @@
-[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
-[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
-[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
-)](https://opensource.org/licenses/MIT)
+# 工作台与核心流程
 
-# 4DLLM
+## 运行方式
 
-一个基于 MCP 协议的自动化 4DSTEM 显微材料分析平台。
+`./run.sh` 启动本地浏览器工作台；`uv run --locked python main.py` 启动 MCP。首次构建页面需要 npm，构建完成后只需 Python 环境和 PostgreSQL。
 
-## 概述
+页面仅通过本机地址访问。配置位于 `config/database.json` 和 `config/api_keys.json`。可在设置页修改，密码和密钥不会通过读取配置接口返回；密码或密钥留空时保留已有值。`DATABASE_URI` 环境变量存在时优先使用它。
 
-本平台为4D-STEM（四维扫描透射电子显微镜）数据分析提供完整解决方案，包括：
+连接成功后会执行 `SQL/schema.sql`，创建缺失的表、字段、索引与约束，不删除现有表。手动初始化使用：
 
-1. **K-Means聚类** 用于无监督模式分类
-2. **大语言模型（LLM）分析** 用于语义解释
-3. **CIF模拟与对比** 用于晶体结构识别
-4. **数据库存储** 具备完整可追溯性和查询能力
-
-系统基于PostgreSQL数据库，拥有支持整个4D-STEM研究工作流程的全面架构。
-
-## 数据库结构
-
-### 核心表（共14个）
-1. **scans** - 扫描实验元数据
-2. **raw_mat_files** - 原始.mat文件引用
-3. **diffraction_patterns** - 基础衍射点数据
-4. **clustering_runs** - K-Means聚类实验日志
-5. **identified_clusters** - 已识别的聚类信息
-6. **pattern_cluster_assignments** - 点到聚类的分配
-7. **llm_analyses** - LLM聚类分析结果
-8. **llm_representative_patterns** - 代表性模式选择
-9. **llm_analysis_results** - 最终扁平化分析结果
-10. **llm_analysis_tags** - 结构化分析标签
-11. **llm_analysis_batches** - 批处理元数据
-12. **cif_files** - CIF文件信息和晶体学数据
-13. **simulated_patterns** - 从CIF文件生成的模拟衍射图案
-14. **pattern_comparisons** - 实验和模拟图案的对比结果
-
-### 视图（共7个）
-1. **cluster_statistics** - 聚类分布统计
-2. **spatial_cluster_distribution** - 空间聚类映射
-3. **llm_analysis_overview** - LLM分析摘要
-4. **tag_statistics** - 结构化标签分析
-5. **batch_processing_stats** - 批处理统计
-6. **cif_statistics** - CIF文件统计
-7. **comparison_overview** - 图案对比结果
-
-## 快速入门
-
-### 1. 系统要求
-- Python 3.13+
-- PostgreSQL 17+
-- Docker（推荐用于数据库）
-- uv 包管理器
-
-### 2. 数据库设置
 ```bash
-# 启动数据库容器
-docker-compose -f docker/docker-compose.yml up -d
-
-# 初始化数据库结构
-python setup_database.py
+uv run --locked python setup_database.py --config config/database.json
 ```
 
-### 3. 配置文件
-复制并编辑配置文件：
-```bash
-cp config/db_config_example.json config/database.json
-cp config/api_keys_example.json config/api_keys.json
-```
+## 导入
 
-在 `config/database.json` 中填写数据库凭证，在 `config/api_keys.json` 中配置LLM API密钥。
+页面通过 Python 后端浏览设置中的数据目录，不需要把大型扫描文件经浏览器上传。目录必须存在；路径解析后仍须位于配置的目录内。
 
-## 核心功能
+导入步骤：
 
-### 数据处理流程
+1. 检查 MIB 格式、完整帧、扫描尺寸和扫描名称。
+2. 把 MIB 与配套 HDR 复制到独立临时目录，同时计算 SHA-256。
+3. 按实际扫描行数生成 MAT 文件，并保存总强度预览。
+4. 在同一个数据库事务中写入扫描、MAT 引用和衍射点，衍射点使用 COPY 批量写入。
+5. 成功后保留独立扫描目录；失败或取消时撤销数据库操作并移除本次临时数据。
 
-1. **数据导入**：将原始.mib文件转换为.mat格式并存入数据库
-2. **聚类分析**：使用K-Means对衍射图案进行无监督分类
-3. **LLM分析**：使用大语言模型对聚类结果进行语义分析
-4. **CIF模拟**：从晶体结构数据库生成理论图案
-5. **图案对比**：对比实验和模拟图案进行识别
-6. **结果存储**：将所有分析结果持久化到数据库
+重名扫描会拒绝导入，相同 SHA-256 的数据也会拒绝重复入库。旧版扫描没有摘要字段，无法自动识别它们与新文件是否为同一份数据。
 
-### 可用的工具
+支持 `U08`、`U16`、`U32`，不支持打包 `R64`。探测器布局支持 `1x1`、`2x2`、`2x2G`。扫描尺寸优先使用用户输入，其次 HDR 或可用的 MIB 头元数据；65536 帧且无尺寸时沿用 256×256。其他扫描缺少尺寸时要求填写，避免猜测。
 
-#### 1. 数据库管理工具
+目录导入处理当前目录内的 MIB，不递归。页面里的行列数可作为该批文件的统一尺寸。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`list_schemas`** | 列出数据库中的所有模式(schema) |
-| **`list_objects`** | 列出指定模式中的对象 |
-| **`get_object_details`** | 显示特定数据库对象的详细信息 |
-| **`execute_sql`** | 执行任意 SQL 查询 |
+## 聚类与结果
 
-#### 2. 扫描分析工具
+按行读取 MAT，逐批提取特征，再对特征矩阵进行 PCA 和 K-Means。原始数据不再整体转成 float32 并拼接。提取特征后的内存仍随图案数增长；工作台没有提供无限规模的流式 PCA。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`analyze_scan_tool`** | 对 4D-STEM 扫描运行聚类分析 |
-| **`display_classification_results`** | 显示已完成分析的扫描的分类结果 |
-| **`verify_cluster_storage_tool`** | 验证指定扫描的聚类分配是否存储在数据库中 |
-| **`regenerate_classification_map_tool`** | 使用 LLM 分配的类别重新生成分类图 |
-| **`show_classification_map`** | 通过本地文件 URL 显示分类图 |
-| **`list_classification_images`** | 列出扫描中所有可用的分类图像和映射 |
-| **`show_classification_overview`** | 显示扫描的全面分类概览(包含对应的映射和样品蒙太奇) |
+每次运行使用独立目录，保存：
 
-#### 3. 扫描导入与信息检索工具
+- `clustering.npz`：`labels`、`xs`、`ys`、到中心的 `distances`。扫描坐标从 1 开始。
+- `parameters.json`：随机种子、设备选择、特征参数、PCA 与 K-Means 设置。
+- `cluster_map.png`：中性的 Cluster 编号图。
+- `montages/cluster_N.png`：每簇距离中心最近的代表图案。
+- `individual_images/cluster_N/`：代表图案单图。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`ingest_scan_from_mib`** | 处理 .mib 文件，解压为多个 .mat 文件，并将扫描信息录入目录数据库 |
-| **`list_ingested_scans`** | 列出所有已导入的科学扫描的高级摘要 |
-| **`get_scan_details`** | 获取指定扫描中的原始 .mat 文件的详细列表 |
+数据库中 `diffraction_patterns` 保存当前分配，`pattern_cluster_assignments` 保留各次运行的分配。写入分配和更新当前结果在同一事务中完成。GUI 和 MCP/CLI 的聚类使用同一个进程锁，避免同时占用计算设备。
 
-#### 4. 原始图像处理工具
+## LLM 与人工标注
 
-| 工具 | 描述 |
-|:------|:------|
-| **`show_raw_image`** | 根据图像所在的 .mat 文件、图像编号和扫描 ID 显示原始图像，并附带 LLM 分析标签 |
+当前 LLM 接口使用 Gemini `generateContent` 格式，可以配置 Google 接口或兼容代理。每簇默认选择五个按扫描坐标均匀分布的样本，默认并发三路。
 
-#### 5. 聚类分析与 LLM 工具
+LLM 结果必须包含有效 `classification_code`：0 真空、1 晶体、2 非晶、3 混合。不合法或失败的响应记录为错误，不以簇编号补造结果。部分样本或簇失败时，任务报告保留错误并标明部分完成。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`generate_cluster_consensus_tool`** | 利用 LLM 为一次扫描中的所有聚类生成共识描述 |
-| **`show_cluster_consensus`** | 显示一次扫描中特定聚类的共识描述 |
-| **`show_cluster_montages`** | 显示一次扫描中特定聚类的代表性衍射图案蒙太奇 |
-| **`run_llm_cluster_analysis`** | 对一次特定扫描中经过聚类的衍射图样运行基于 LLM 的分析 |
-| **`get_llm_analysis_summary`** | 获取一次特定扫描上所有 LLM 分析的摘要 |
-| **`get_cluster_llm_details`** | 获取一个特定聚类的详细 LLM 分析结果 |
+簇级 LLM 建议与样本结果写入数据库；模型、提示词和返回样本保留在分析详情与任务报告里。人工类别和备注写入独立的 `cluster_annotations` 表，不覆盖 LLM 建议。
 
-#### 6. CIF 文件处理工具
+GUI 的 LLM 按钮分析提交任务时解析到的运行；历史运行可以单独查看。多次对同一簇进行 LLM 分析时，数据库显示最新建议，任务报告保留之前的返回结果。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`download_cif_file`** | 从晶体数据库下载 CIF 文件并存储到数据库 |
-| **`upload_cif_file`** | 上传本地 CIF 文件到数据库 |
-| **`generate_simulated_patterns`** | 从 CIF 文件生成模拟的衍射图案 |
-| **`compare_patterns`** | 比较实验衍射图案与从 CIF 文件生成的模拟图案 |
+## 任务
 
-#### 7. LLM 连接性与测试工具
+任务记录和日志位于 `workspace/jobs/`。队列串行启动独立 Python 工作进程。状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`。
 
-| 工具 | 描述 |
-|:------|:------|
-| **`test_llm_analysis`** | 通过分析本地图像文件测试 LLM 连接性 |
+取消采用协作式检查：复制数据、转换行、提取特征、保存代表图与批量入库时有检查点；PCA、K-Means 与 LLM 请求结束后才响应取消。取消已经提交完成的操作不会撤销它，任务仍报告成功。LLM 的各簇结果分别提交，取消或失败前已完成的簇建议保留。
 
+正常关闭应用会等待当前工作进程完成，剩余排队任务留到下次启动；重启后继续排队任务。工作进程异常退出的任务记为失败，点击重试会创建新任务。
 
-## 项目结构
+## HTTP 接口
 
-```
-4DLLM/
-├── config/                 # 配置文件
-├── helper/                 # 命令行工具
-├── postgres_mcp/           # 数据库相关模块
-├── api_manager/            # API密钥管理
-├── docker/                 # Docker配置
-├── cif_analysis/           # CIF分析模块
-├── SQL/                    # 数据库架构
-├── Data/                   # 处理后的数据文件
-├── Raw/                    # 原始数据文件
-└── docs/                   # 文档
-```
+浏览器和 HTTP 接口使用同一来源。以下路径均带 `/api` 前缀。
 
-## 数据库设计原则
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/status`、`/settings` | 连接状态、可展示配置 |
+| PUT | `/settings` | 保存数据库、LLM 和导入目录 |
+| GET | `/files?path=...` | 浏览数据目录 |
+| POST | `/inspect` | 检查 MIB，输入 `path` 与可选 `scan_shape` |
+| POST | `/imports` | 导入单文件，输入 `path`、可选 `scan_shape` 与 `scan_name` |
+| POST | `/import-folders` | 导入目录，输入 `path` 与可选 `scan_shape` |
+| GET | `/scans`、`/scans/{id}` | 扫描列表和分析历史 |
+| GET | `/scans/{id}/overview`、`/scans/{id}/pattern?row=1&col=1` | 预览图 |
+| POST | `/scans/{id}/cluster` | 提交聚类，输入 `k`、`seed`、`device` |
+| POST | `/scans/{id}/llm` | 提交 LLM，输入可选 `cluster_id`、`samples`、`concurrency` |
+| GET | `/runs/{id}`、`/runs/{id}/grid` | 簇结果和空间图数据 |
+| GET | `/runs/{id}/files/{name}` | 下载结果文件 |
+| PUT | `/clusters/{id}/annotation` | 保存人工类别和备注；`category: null` 清除标注 |
+| GET | `/jobs`、`/jobs/{id}` | 任务列表和状态 |
+| POST | `/jobs/{id}/cancel`、`/jobs/{id}/retry` | 取消或重新提交 |
+| GET | `/jobs/{id}/log`、`/jobs/{id}/report` | 日志、完整任务报告 |
 
-### 规范化结构
-数据库遵循规范化原则，消除冗余并确保数据完整性：
-- 每个实体都有单一的信息来源
-- 通过外键约束强制执行关系
-- 级联删除维护引用完整性
+## MCP 与可选 CIF
 
-### 分层架构
-架构按逻辑层组织：
-1. **原始数据层** - 原始扫描数据存储
-2. **聚类分析层** - K-Means处理结果
-3. **LLM分析层** - 聚类的语义解释
-4. **LLM结果层** - 扁平化的分析结果供查询
-5. **CIF模拟层** - 晶体结构模拟和对比
+原有扫描导入、聚类、图像查看、LLM 和 CIF 管理入口保留。`ingest_scan_from_mib` 增加可选的 `scan_rows`、`scan_columns`、`scan_name`；`check_analysis_status` 返回浏览器任务记录。
 
-### 为分析优化
-战略性索引和视图实现实效查询：
-- 空间索引用于基于坐标的查询
-- 复合索引用于常见过滤器组合
-- 预计算视图用于频繁的分析模式
+未启用的数据库索引调优、健康检查、Explain 和 top-query 模块已删除；原有 SQL 执行与只读 SQL 校验保留。MCP 的同步调用不会加入浏览器队列，但聚类共用核心锁。
 
-## 高级特性
-
-### 限速LLM处理
-系统实现智能限速以防止压垮LLM API：
-- 可配置的并发限制（默认：64个并行任务）
-- 带指数退避的自动重试
-- 批处理以提高吞吐量
-
-### 图案对比框架
-高级图案对比能力：
-- 多种相似性度量（SSIM、MSE、余弦相似性等）
-- 实验和模拟图案之间的批量对比
-- 自动识别的置信度评分
-
-### 可扩展标记系统
-结构化标记系统实现灵活分类：
-- 领域特定类别（phase_type、crystallinity_level等）
-- 置信度评分用于不确定性量化
-- 统计视图用于标记分析
-
-## 开源许可与致谢
-
-### 核心项目
-- **4DLLM**: 本项目已在 GitHub 上开源。
-  - **代码仓库**: [https://github.com/Frank0415/4DLLM](https://github.com/Frank0415/4DLLM)
-  - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
-
-### 依赖的开源组件
-本项目的开发建立在以下优秀开源项目的基础之上：
-
-1.  **MCP 服务器框架**:
-    - 基于 [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) 构建。
-    - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
-
-2.  **图像处理功能**:
-    - 图片读取功能基于 [ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)。
-    - **许可证**: [MIT License](https://opensource.org/licenses/MIT)
-
-### 相关项目
-- **4DLLM-arxiv-mcp-server**: 我们用于ArXiv论文分析的MCP服务器也已开源。
-  - **代码仓库**: [https://github.com/Frank0415/4DLLM-arxiv-mcp-server](https://github.com/Frank0415/4DLLM-arxiv-mcp-server)
-  - **基于项目**: [blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)
-  - **许可证**: [Apache-2.0 license](https://opensource.org/licenses/Apache-2.0)
-
-我们衷心感谢以上所有项目和贡献者。
-
-## 故障排除
-
-### 常见问题
-
-1. **数据库连接失败**：检查Docker容器是否运行并验证数据库凭证
-2. **LLM API错误**：检查API密钥配置并确保网络连接
-3. **内存不足**：减少批处理大小或切换到CPU处理
-4. **缺少依赖**：确保所有必需的Python包都已安装
-
-### 获取帮助
-
-对于本文档未涵盖的问题，请查看日志了解详细错误信息并查阅相关模块文档。
-
----
-*文档最后更新：2025年9月*
+CIF 模拟需要 `uv sync --extra simulation`。CIF 图案比较尚未实现，MCP 返回 `not_implemented`；GUI 第一版提供扫描、聚类和 LLM 工作流。

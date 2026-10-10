@@ -3,29 +3,13 @@
 -- #  Database: 4dllm
 -- #############################################################################
 
--- Drop tables in reverse dependency order
-DROP TABLE IF EXISTS pattern_comparisons cascade;
-DROP TABLE IF EXISTS simulated_patterns cascade;
-DROP TABLE IF EXISTS cif_files cascade;
-DROP TABLE IF EXISTS llm_analysis_batches cascade;
-DROP TABLE IF EXISTS llm_analysis_tags cascade;
-DROP TABLE IF EXISTS llm_analysis_results cascade;
-DROP TABLE IF EXISTS llm_representative_patterns cascade;
-DROP TABLE IF EXISTS llm_analyses cascade;
-DROP TABLE IF EXISTS pattern_cluster_assignments cascade;
-DROP TABLE IF EXISTS identified_clusters cascade;
-DROP TABLE IF EXISTS clustering_runs cascade;
-DROP TABLE IF EXISTS diffraction_patterns cascade;
-DROP TABLE IF EXISTS raw_mat_files cascade;
-DROP TABLE IF EXISTS scans cascade;
-
 -- ===============================================================================
 -- Layer 1: Raw Data Layer
 -- ===============================================================================
 
 -- Table 1: scans (Scan experiments)
 -- Purpose: Record each complete scan experiment, the top-level organization unit.
-CREATE TABLE scans (
+CREATE TABLE IF NOT EXISTS scans (
     id SERIAL PRIMARY KEY,
     scan_name VARCHAR(255) UNIQUE NOT NULL,
     folder_path VARCHAR(1024) UNIQUE NOT NULL,
@@ -37,7 +21,7 @@ COMMENT ON COLUMN scans.classification_map_path IS 'Global color map path genera
 
 -- Table 2: raw_mat_files (Raw .mat data files)
 -- Purpose: Record raw .mat files for each scan experiment.
-CREATE TABLE raw_mat_files (
+CREATE TABLE IF NOT EXISTS raw_mat_files (
     id SERIAL PRIMARY KEY,
     scan_id INTEGER NOT NULL,
     row_index INTEGER NOT NULL,
@@ -48,7 +32,7 @@ COMMENT ON TABLE raw_mat_files IS 'Record raw .mat files for each scan experimen
 
 -- Table 3: diffraction_patterns (Basic diffraction points)
 -- Purpose: Record the most basic data unit: a (row, col) coordinate point.
-CREATE TABLE diffraction_patterns (
+CREATE TABLE IF NOT EXISTS diffraction_patterns (
     id SERIAL PRIMARY KEY,
     source_mat_id INTEGER NOT NULL,
     col_index INTEGER NOT NULL,
@@ -64,7 +48,7 @@ COMMENT ON TABLE diffraction_patterns IS 'Most basic data unit, representing a (
 
 -- Table 4: clustering_runs (Clustering experiment logs)
 -- Purpose: Record each independent K-Means clustering experiment for reproducibility.
-CREATE TABLE clustering_runs (
+CREATE TABLE IF NOT EXISTS clustering_runs (
     id SERIAL PRIMARY KEY,
     scan_id INTEGER NOT NULL,
     run_timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -76,7 +60,7 @@ COMMENT ON TABLE clustering_runs IS 'Record each independent K-Means clustering 
 
 -- Table 5: identified_clusters (Identified clusters)
 -- Purpose: Represent a specific category identified in a clustering experiment.
-CREATE TABLE identified_clusters (
+CREATE TABLE IF NOT EXISTS identified_clusters (
     id SERIAL PRIMARY KEY,
     run_id INTEGER NOT NULL,
     cluster_index INTEGER NOT NULL,
@@ -88,7 +72,7 @@ COMMENT ON TABLE identified_clusters IS 'Represent a specific category identifie
 
 -- Table 6: pattern_cluster_assignments (Point-cluster assignments)
 -- Purpose: Core connection table recording which cluster each diffraction point is assigned to.
-CREATE TABLE pattern_cluster_assignments (
+CREATE TABLE IF NOT EXISTS pattern_cluster_assignments (
     pattern_id INTEGER NOT NULL,
     cluster_id INTEGER NOT NULL,
     assignment_confidence FLOAT,
@@ -102,7 +86,7 @@ COMMENT ON TABLE pattern_cluster_assignments IS 'Core connection table recording
 
 -- Table 7: llm_analyses (LLM analysis results)
 -- Purpose: Store deep LLM analysis results for identified clusters.
-CREATE TABLE llm_analyses (
+CREATE TABLE IF NOT EXISTS llm_analyses (
     id SERIAL PRIMARY KEY,
     cluster_id INTEGER UNIQUE NOT NULL,
     representative_patterns_count INTEGER,
@@ -115,7 +99,7 @@ COMMENT ON TABLE llm_analyses IS 'Store deep LLM analysis results for identified
 
 -- Table 8: llm_representative_patterns (LLM representative patterns)
 -- Purpose: Record which diffraction points were selected as representatives for LLM analysis.
-CREATE TABLE llm_representative_patterns (
+CREATE TABLE IF NOT EXISTS llm_representative_patterns (
     analysis_id INTEGER NOT NULL,
     pattern_id INTEGER NOT NULL,
     selection_reason TEXT,
@@ -129,7 +113,7 @@ COMMENT ON TABLE llm_representative_patterns IS 'Record which diffraction points
 
 -- Table 9: llm_analysis_results (LLM analysis final results)
 -- Purpose: Store final results for each diffraction point after LLM analysis.
-CREATE TABLE llm_analysis_results (
+CREATE TABLE IF NOT EXISTS llm_analysis_results (
     id SERIAL PRIMARY KEY,
     pattern_id INTEGER UNIQUE NOT NULL,
     scan_id INTEGER NOT NULL,
@@ -147,7 +131,7 @@ COMMENT ON TABLE llm_analysis_results IS 'Store final results for each diffracti
 
 -- Table 10: llm_analysis_tags (LLM analysis tags)
 -- Purpose: Store structured tags from LLM analysis for querying and statistics.
-CREATE TABLE llm_analysis_tags (
+CREATE TABLE IF NOT EXISTS llm_analysis_tags (
     id SERIAL PRIMARY KEY,
     result_id INTEGER NOT NULL,
     tag_category VARCHAR(100) NOT NULL,
@@ -159,7 +143,7 @@ COMMENT ON TABLE llm_analysis_tags IS 'Store structured tags from LLM analysis f
 
 -- Table 11: llm_analysis_batches (LLM analysis batches)
 -- Purpose: Record batch information for LLM analysis for batch processing and monitoring.
-CREATE TABLE llm_analysis_batches (
+CREATE TABLE IF NOT EXISTS llm_analysis_batches (
     id SERIAL PRIMARY KEY,
     batch_name VARCHAR(255) NOT NULL,
     total_patterns INTEGER NOT NULL,
@@ -178,7 +162,7 @@ COMMENT ON TABLE llm_analysis_batches IS 'Record batch information for LLM analy
 
 -- Table 12: cif_files (CIF file information)
 -- Purpose: Store CIF files and their crystallographic information.
-CREATE TABLE cif_files (
+CREATE TABLE IF NOT EXISTS cif_files (
     id SERIAL PRIMARY KEY,
     filename VARCHAR(255) NOT NULL,
     file_path VARCHAR(1024) NOT NULL,
@@ -192,7 +176,7 @@ COMMENT ON TABLE cif_files IS 'Store CIF files and their crystallographic inform
 
 -- Table 13: simulated_patterns (Simulated diffraction patterns)
 -- Purpose: Store simulated diffraction patterns generated from CIF files.
-CREATE TABLE simulated_patterns (
+CREATE TABLE IF NOT EXISTS simulated_patterns (
     id SERIAL PRIMARY KEY,
     cif_id INTEGER NOT NULL,
     pattern_data BYTEA,
@@ -203,7 +187,7 @@ COMMENT ON TABLE simulated_patterns IS 'Store simulated diffraction patterns gen
 
 -- Table 14: pattern_comparisons (Pattern comparison results)
 -- Purpose: Store comparison results between experimental and simulated patterns.
-CREATE TABLE pattern_comparisons (
+CREATE TABLE IF NOT EXISTS pattern_comparisons (
     id SERIAL PRIMARY KEY,
     experimental_pattern_id INTEGER,
     simulated_pattern_id INTEGER,
@@ -246,81 +230,157 @@ CREATE INDEX IF NOT EXISTS idx_pattern_comparisons_similarity ON pattern_compari
 -- ===============================================================================
 -- Add foreign key constraints
 -- ===============================================================================
-ALTER TABLE raw_mat_files 
-ADD CONSTRAINT fk_raw_mat_files_scans 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_raw_mat_files_scans' AND conrelid = 'raw_mat_files'::regclass) THEN
+        ALTER TABLE raw_mat_files
+ADD CONSTRAINT fk_raw_mat_files_scans
 FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE diffraction_patterns 
-ADD CONSTRAINT fk_diffraction_patterns_raw_mat_files 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_diffraction_patterns_raw_mat_files' AND conrelid = 'diffraction_patterns'::regclass) THEN
+        ALTER TABLE diffraction_patterns
+ADD CONSTRAINT fk_diffraction_patterns_raw_mat_files
 FOREIGN KEY (source_mat_id) REFERENCES raw_mat_files(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE diffraction_patterns 
-ADD CONSTRAINT fk_diffraction_patterns_clustering_runs 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_diffraction_patterns_clustering_runs' AND conrelid = 'diffraction_patterns'::regclass) THEN
+        ALTER TABLE diffraction_patterns
+ADD CONSTRAINT fk_diffraction_patterns_clustering_runs
 FOREIGN KEY (clustering_run_id) REFERENCES clustering_runs(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE clustering_runs 
-ADD CONSTRAINT fk_clustering_runs_scans 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_clustering_runs_scans' AND conrelid = 'clustering_runs'::regclass) THEN
+        ALTER TABLE clustering_runs
+ADD CONSTRAINT fk_clustering_runs_scans
 FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE identified_clusters 
-ADD CONSTRAINT fk_identified_clusters_clustering_runs 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_identified_clusters_clustering_runs' AND conrelid = 'identified_clusters'::regclass) THEN
+        ALTER TABLE identified_clusters
+ADD CONSTRAINT fk_identified_clusters_clustering_runs
 FOREIGN KEY (run_id) REFERENCES clustering_runs(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE pattern_cluster_assignments 
-ADD CONSTRAINT fk_pattern_cluster_assignments_diffraction_patterns 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_pattern_cluster_assignments_diffraction_patterns' AND conrelid = 'pattern_cluster_assignments'::regclass) THEN
+        ALTER TABLE pattern_cluster_assignments
+ADD CONSTRAINT fk_pattern_cluster_assignments_diffraction_patterns
 FOREIGN KEY (pattern_id) REFERENCES diffraction_patterns(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE pattern_cluster_assignments 
-ADD CONSTRAINT fk_pattern_cluster_assignments_identified_clusters 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_pattern_cluster_assignments_identified_clusters' AND conrelid = 'pattern_cluster_assignments'::regclass) THEN
+        ALTER TABLE pattern_cluster_assignments
+ADD CONSTRAINT fk_pattern_cluster_assignments_identified_clusters
 FOREIGN KEY (cluster_id) REFERENCES identified_clusters(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analyses 
-ADD CONSTRAINT fk_llm_analyses_identified_clusters 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analyses_identified_clusters' AND conrelid = 'llm_analyses'::regclass) THEN
+        ALTER TABLE llm_analyses
+ADD CONSTRAINT fk_llm_analyses_identified_clusters
 FOREIGN KEY (cluster_id) REFERENCES identified_clusters(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_representative_patterns 
-ADD CONSTRAINT fk_llm_representative_patterns_llm_analyses 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_representative_patterns_llm_analyses' AND conrelid = 'llm_representative_patterns'::regclass) THEN
+        ALTER TABLE llm_representative_patterns
+ADD CONSTRAINT fk_llm_representative_patterns_llm_analyses
 FOREIGN KEY (analysis_id) REFERENCES llm_analyses(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_representative_patterns 
-ADD CONSTRAINT fk_llm_representative_patterns_diffraction_patterns 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_representative_patterns_diffraction_patterns' AND conrelid = 'llm_representative_patterns'::regclass) THEN
+        ALTER TABLE llm_representative_patterns
+ADD CONSTRAINT fk_llm_representative_patterns_diffraction_patterns
 FOREIGN KEY (pattern_id) REFERENCES diffraction_patterns(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_results 
-ADD CONSTRAINT fk_llm_analysis_results_diffraction_patterns 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_results_diffraction_patterns' AND conrelid = 'llm_analysis_results'::regclass) THEN
+        ALTER TABLE llm_analysis_results
+ADD CONSTRAINT fk_llm_analysis_results_diffraction_patterns
 FOREIGN KEY (pattern_id) REFERENCES diffraction_patterns(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_results 
-ADD CONSTRAINT fk_llm_analysis_results_scans 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_results_scans' AND conrelid = 'llm_analysis_results'::regclass) THEN
+        ALTER TABLE llm_analysis_results
+ADD CONSTRAINT fk_llm_analysis_results_scans
 FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_results 
-ADD CONSTRAINT fk_llm_analysis_results_clustering_runs 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_results_clustering_runs' AND conrelid = 'llm_analysis_results'::regclass) THEN
+        ALTER TABLE llm_analysis_results
+ADD CONSTRAINT fk_llm_analysis_results_clustering_runs
 FOREIGN KEY (clustering_run_id) REFERENCES clustering_runs(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_results 
-ADD CONSTRAINT fk_llm_analysis_results_identified_clusters 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_results_identified_clusters' AND conrelid = 'llm_analysis_results'::regclass) THEN
+        ALTER TABLE llm_analysis_results
+ADD CONSTRAINT fk_llm_analysis_results_identified_clusters
 FOREIGN KEY (cluster_id) REFERENCES identified_clusters(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_results 
-ADD CONSTRAINT fk_llm_analysis_results_llm_analyses 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_results_llm_analyses' AND conrelid = 'llm_analysis_results'::regclass) THEN
+        ALTER TABLE llm_analysis_results
+ADD CONSTRAINT fk_llm_analysis_results_llm_analyses
 FOREIGN KEY (llm_analysis_id) REFERENCES llm_analyses(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE llm_analysis_tags 
-ADD CONSTRAINT fk_llm_analysis_tags_llm_analysis_results 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_llm_analysis_tags_llm_analysis_results' AND conrelid = 'llm_analysis_tags'::regclass) THEN
+        ALTER TABLE llm_analysis_tags
+ADD CONSTRAINT fk_llm_analysis_tags_llm_analysis_results
 FOREIGN KEY (result_id) REFERENCES llm_analysis_results(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE simulated_patterns 
-ADD CONSTRAINT fk_simulated_patterns_cif_files 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_simulated_patterns_cif_files' AND conrelid = 'simulated_patterns'::regclass) THEN
+        ALTER TABLE simulated_patterns
+ADD CONSTRAINT fk_simulated_patterns_cif_files
 FOREIGN KEY (cif_id) REFERENCES cif_files(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE pattern_comparisons 
-ADD CONSTRAINT fk_pattern_comparisons_diffraction_patterns 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_pattern_comparisons_diffraction_patterns' AND conrelid = 'pattern_comparisons'::regclass) THEN
+        ALTER TABLE pattern_comparisons
+ADD CONSTRAINT fk_pattern_comparisons_diffraction_patterns
 FOREIGN KEY (experimental_pattern_id) REFERENCES diffraction_patterns(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
-ALTER TABLE pattern_comparisons 
-ADD CONSTRAINT fk_pattern_comparisons_simulated_patterns 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_pattern_comparisons_simulated_patterns' AND conrelid = 'pattern_comparisons'::regclass) THEN
+        ALTER TABLE pattern_comparisons
+ADD CONSTRAINT fk_pattern_comparisons_simulated_patterns
 FOREIGN KEY (simulated_pattern_id) REFERENCES simulated_patterns(id) ON DELETE CASCADE;
+    END IF;
+END; $$;
 
 -- ===============================================================================
 -- Create views for common queries
@@ -328,7 +388,7 @@ FOREIGN KEY (simulated_pattern_id) REFERENCES simulated_patterns(id) ON DELETE C
 
 -- View 1: Cluster statistics
 CREATE OR REPLACE VIEW cluster_statistics AS
-SELECT 
+SELECT
     cr.scan_id,
     cr.id as clustering_run_id,
     ic.cluster_index,
@@ -345,7 +405,7 @@ ORDER BY cr.scan_id, ic.cluster_index;
 
 -- View 2: Spatial cluster distribution
 CREATE OR REPLACE VIEW spatial_cluster_distribution AS
-SELECT 
+SELECT
     s.scan_name,
     cr.id as clustering_run_id,
     rmf.row_index as x_coordinate,
@@ -360,7 +420,7 @@ ORDER BY s.scan_name, rmf.row_index, dp.col_index;
 
 -- View 3: LLM analysis overview
 CREATE OR REPLACE VIEW llm_analysis_overview AS
-SELECT 
+SELECT
     s.scan_name,
     cr.id as clustering_run_id,
     ic.cluster_index,
@@ -375,7 +435,7 @@ ORDER BY s.scan_name, cr.id, ic.cluster_index;
 
 -- View 4: Tag statistics
 CREATE OR REPLACE VIEW tag_statistics AS
-SELECT 
+SELECT
     lat.tag_category,
     lat.tag_value,
     COUNT(*) as count,
@@ -386,7 +446,7 @@ ORDER BY lat.tag_category, count DESC;
 
 -- View 5: Batch processing statistics
 CREATE OR REPLACE VIEW batch_processing_stats AS
-SELECT 
+SELECT
     lab.batch_name,
     lab.total_patterns,
     lab.processed_patterns,
@@ -400,7 +460,7 @@ ORDER BY lab.created_at DESC;
 
 -- View 6: CIF file statistics
 CREATE OR REPLACE VIEW cif_statistics AS
-SELECT 
+SELECT
     cf.id,
     cf.filename,
     cf.crystal_system,
@@ -414,7 +474,7 @@ ORDER BY cf.uploaded_at DESC;
 
 -- View 7: Pattern comparison overview
 CREATE OR REPLACE VIEW comparison_overview AS
-SELECT 
+SELECT
     pc.id as comparison_id,
     dp.id as experimental_pattern_id,
     sp.id as simulated_pattern_id,
@@ -430,3 +490,15 @@ ORDER BY pc.similarity_score DESC, pc.compared_at DESC;
 
 -- Success message
 SELECT '4D-STEM research database schema created successfully!' AS status;
+
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS source_mib_path TEXT;
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS source_sha256 VARCHAR(64);
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scans_source_sha256 ON scans(source_sha256) WHERE source_sha256 IS NOT NULL;
+ALTER TABLE clustering_runs ADD COLUMN IF NOT EXISTS parameters JSONB NOT NULL DEFAULT '{}';
+CREATE TABLE IF NOT EXISTS cluster_annotations (
+    cluster_id INTEGER PRIMARY KEY REFERENCES identified_clusters(id) ON DELETE CASCADE,
+    category VARCHAR(32) NOT NULL CHECK (category IN ('vacuum', 'crystalline', 'amorphous', 'mixed')),
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

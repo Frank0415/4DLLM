@@ -1,41 +1,11 @@
-# postgres_mcp.analyze
+# Analysis core
 
-This package provides an asynchronous entrypoint to run the pre_class_v2 clustering + plotting
-pipeline on scans already cataloged in the PostgreSQL database. It is designed to be called from
-inside the MCP server code (or other Python programs) and follows the MCP sql_driver conventions.
+`analyze_scan(sql_driver, scan_identifier, out_root=None, k_clusters=16, seed=0, device=None, progress=None)` resolves a scan, loads MAT rows sequentially, extracts polar features, performs PCA and K-Means, writes a new result directory, and stores all assignments in one transaction.
 
-Exported API
+`progress(stage, fraction, message)` is optional. Raising from it stops processing at a checkpoint and triggers cleanup. A shared process lock prevents overlapping clustering from GUI, CLI, and MCP.
 
-- analyze_scan(sql_driver, scan_identifier, out_root, k_clusters=16, seed=0, device=None)
-  - sql_driver: MCP SQL driver (async interface) exposing execute_param_query(query, params)
-  - scan_identifier: either integer scan_id or string scan_name
-  - out_root: output directory where montages, xy maps and npz are written
-  - k_clusters: k for kmeans
-  - seed: random seed
-  - device: torch device string (eg. 'cpu' or 'cuda') or None to auto-detect
+`class_base.py` owns the algorithms shared with the interactive `pre_class_v2.py` entry point. `db_analyze.py` owns orchestration, result persistence, and rendering. Clustering maps show neutral cluster IDs; LLM suggestions and human labels are separate.
 
-Behavior
+Current labels live in `diffraction_patterns`. Historical assignments remain in `pattern_cluster_assignments`. `regenerate_classification_map` reads assignments for the requested historical run.
 
-- The function queries `raw_mat_files` joined with `scans` to get ordered .mat file paths
-  for the given scan identifier.
-- The .mat files are loaded in background threads and stacked into an array (N, H, W).
-- A synchronous clustering routine (feature extraction, PCA, kmeans, montage creation, XY map)
-  is executed in a threadpool worker to avoid blocking the event loop.
-- The function returns a dictionary with file paths for generated outputs.
-
-Usage from MCP server
-In a tool inside `postgres_mcp/server.py` you can call it like:
-
-```python
-from postgres_mcp.analyze import analyze_scan
-
-# inside an async MCP tool function:
-result = await analyze_scan(sql_driver, scan_identifier, out_root="/tmp/scan_outputs", k_clusters=16)
-# return result to user (list of paths etc.)
-```
-
-Notes
-
-- Assumes `raw_mat_files.file_path` contains server-local absolute paths to .mat files.
-- The pipeline uses `pre_class_v2` code for feature extraction and plotting. Ensure dependencies (torch, numpy, scipy, matplotlib) are installed.
-- Outputs are saved under `out_root/<scan_identifier>/...`.
+See [documentation](../../docs/documentation.md) for outputs and task behavior.

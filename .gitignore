@@ -225,3 +225,8 @@ simulation.py
 cif_files
 prev.md
 REAL_LLM_IMPLEMENTATION.md
+
+workspace/
+frontend/node_modules/
+frontend/dist/
+cluster_images/

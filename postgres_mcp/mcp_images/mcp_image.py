@@ -1,48 +1,18 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import asyncio
 import httpx
 import logging
 from io import BytesIO
-from datetime import datetime
+from tempfile import TemporaryDirectory
 from PIL import Image as PILImage
 from urllib.parse import urlparse
 from mcp.server.fastmcp import FastMCP, Image, Context
 from typing import List, Dict, Any, Union, Optional
 
 MAX_IMAGE_SIZE = 1024  # Maximum dimension size in pixels
-TEMP_DIR = "./Temp"
-DATA_DIR = "./data"
-
-# Ensure directories exist
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-# Configure logging: first disable other loggers
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-logging.getLogger("mcp").setLevel(logging.WARNING)
-
-# Configure our logger
-log_filename = os.path.join(DATA_DIR, datetime.now().strftime("%d-%m-%y.log"))
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-
-# Create handlers
-file_handler = logging.FileHandler(log_filename)
-file_handler.setFormatter(formatter)
-console_handler = logging.StreamHandler(sys.stderr)
-console_handler.setFormatter(formatter)
-
-# Set up our logger
-logger = logging.getLogger("image-mcp")
-logger.setLevel(logging.DEBUG)
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-# Prevent double logging
-logger.propagate = False
+logger = logging.getLogger(__name__)
 
 # Create a FastMCP server instance
 mcp = FastMCP("image-service")
@@ -75,9 +45,8 @@ async def process_image_data(
             return Image(data=data, format=content_type)
 
         # For large images, save to temp file and process
-        temp_path = os.path.join(
-            TEMP_DIR, f"temp_image_{hash(image_source)}." + content_type.split("/")[-1]
-        )
+        temporary = TemporaryDirectory(prefix="4dllm-image-")
+        temp_path = os.path.join(temporary.name, "image." + content_type.split("/")[-1])
         with open(temp_path, "wb") as f:
             f.write(data)
 
@@ -185,8 +154,7 @@ async def process_image_data(
             logger.exception(f"Exception processing image from {image_source}")
             return None
         finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            temporary.cleanup()
 
     except Exception as e:
         ctx.error(f"Error processing image: {str(e)}")
@@ -258,11 +226,7 @@ async def process_large_local_image(
     file_path: str, content_type: str, ctx: Context
 ) -> Dict[str, Any]:
     """Process a large local image file directly without loading it entirely into memory."""
-    temp_path = None
     try:
-        # Create a temporary file path for processing
-        temp_path = os.path.join(TEMP_DIR, f"temp_local_{os.path.basename(file_path)}")
-
         # First pass: get dimensions and basic info
         with PILImage.open(file_path) as img:
             orig_width, orig_height = img.size
@@ -363,12 +327,6 @@ async def process_large_local_image(
         ctx.error(error_msg)
         logger.exception(error_msg)
         return {"path": file_path, "error": error_msg}
-
-    finally:
-        # Clean up temporary file if it exists
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-
 
 async def fetch_single_image(
     url: str, client: httpx.AsyncClient, ctx: Context

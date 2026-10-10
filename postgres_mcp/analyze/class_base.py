@@ -30,9 +30,8 @@ from .type_colors import get_color_map
 # =========================
 #           CONFIG
 # =========================
-OBJECT_NAME = r"Standard\Au_Ag"
-NPY_DIR = rf"E:\zhr\Multi4D_v2\Final_version\{OBJECT_NAME}\dataset\exp"  # <--- SET YOUR INPUT DIRECTORY
-OUT_ROOT = rf"E:\zhr\Multi4D_v2\Final_version\{OBJECT_NAME}\results\classification_maps"  # <--- SET YOUR OUTPUT DIRECTORY
+NPY_DIR = None
+OUT_ROOT = "results"
 
 BATCH = 1024
 NBINS = 4
@@ -290,14 +289,16 @@ class GPUExtractor:
         return torch.cat(mags, dim=1)
 
     @torch.no_grad()
-    def extract(self, data_array):
+    def extract(self, data_array, progress=None):
         N, H, W = data_array.shape
         Fdim = self.nbins + self.nbins + 20 + 4 + len(self.harmonics) * self.rad_bands
         X_out = np.zeros((N, Fdim), dtype=np.float32)
         steps = math.ceil(N / self.batch)
         for step in tqdm(range(steps), desc="GPU feature extraction"):
             s, e = step * self.batch, min(N, (step + 1) * self.batch)
-            chunk = np.array(data_array[s:e], dtype=np.float32, copy=False)
+            if progress:
+                progress(s / N)
+            chunk = np.asarray(data_array[s:e], dtype=np.float32)
             t = torch.from_numpy(chunk).unsqueeze(1).to(self.device, non_blocking=True)
             cart = self._preprocess(t)
             B = cart.size(0)
@@ -375,8 +376,11 @@ def kmeanspp_init(X, K, restarts=2, seed=0):
         centers = [X[i0 : i0 + 1]]
         d2 = pairwise_dist2(X, centers[0])[:, 0]
         for _k in range(1, K):
-            probs = d2 / (d2.sum() + 1e-8)
-            idx = torch.multinomial(probs, 1, generator=g).item()
+            total = d2.sum()
+            if total <= 1e-8:
+                idx = torch.randint(0, N, (1,), generator=g, device=X.device).item()
+            else:
+                idx = torch.multinomial(d2 / total, 1, generator=g).item()
             centers.append(X[idx : idx + 1])
             C = torch.cat(centers, dim=0)
             d2 = torch.minimum(d2, pairwise_dist2(X, C)[..., -1])
@@ -563,6 +567,14 @@ def finalize_and_save(cluster_results: dict, user_map: dict):
 #            MAIN
 # =========================
 def main():
+    import argparse
+    global NPY_DIR, OUT_ROOT, K
+    parser = argparse.ArgumentParser(description="Interactive 4D-STEM NPY clustering")
+    parser.add_argument("input_dir")
+    parser.add_argument("--out-root", default="results")
+    parser.add_argument("--k-clusters", type=int, default=K)
+    args = parser.parse_args()
+    NPY_DIR, OUT_ROOT, K = args.input_dir, args.out_root, args.k_clusters
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Device = {device}")

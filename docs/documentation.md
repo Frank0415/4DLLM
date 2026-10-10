@@ -1,249 +1,83 @@
-[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
-[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
-[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
-)](https://opensource.org/licenses/MIT)
+# Workbench and analysis workflow
 
-# 4DLLM
+## Launch and configuration
 
-An automated 4DSTEM microscopic material analysis based on MCP.
+Run `./run.sh` for the local browser interface or `uv run --locked python main.py` for MCP. Node.js/npm is needed for the initial frontend build. The application binds to `127.0.0.1`.
 
-## Overview
+Settings are stored in `config/database.json` and `config/api_keys.json`. The browser can update them without returning existing passwords or API keys. Leaving secret fields blank preserves their values. `DATABASE_URI` overrides database settings; `FOURDLLM_CONFIG` chooses a database configuration file. `FOURDLLM_DATA_DIR` chooses the data directory, defaulting to `workspace/`.
 
-This platform provides a complete solution for analyzing 4D-STEM (Four-Dimensional Scanning Transmission Electron Microscopy) data through:
+Create the PostgreSQL database before connecting. The application then runs `SQL/schema.sql` to create missing tables, columns, indexes, and constraints without dropping existing data. To perform this step manually:
 
-1. **K-Means Clustering** for unsupervised pattern classification
-2. **Large Language Model (LLM) Analysis** for semantic interpretation
-3. **CIF Simulation and Comparison** for crystal structure identification
-4. **Database Storage** with full traceability and querying capabilities
-
-The system is built on a PostgreSQL database with a comprehensive schema supporting the entire 4D-STEM research workflow.
-
-## Database Structure
-
-### Core Tables (14 total)
-1. **scans** - Scan experiment metadata
-2. **raw_mat_files** - Raw .mat file references
-3. **diffraction_patterns** - Basic diffraction point data
-4. **clustering_runs** - K-Means clustering experiment logs
-5. **identified_clusters** - Identified cluster information
-6. **pattern_cluster_assignments** - Point-to-cluster assignments
-7. **llm_analyses** - LLM analysis results for clusters
-8. **llm_representative_patterns** - Representative pattern selections
-9. **llm_analysis_results** - Final flattened analysis results
-10. **llm_analysis_tags** - Structured analysis tags
-11. **llm_analysis_batches** - Batch processing metadata
-12. **cif_files** - CIF file information and crystallographic data
-13. **simulated_patterns** - Simulated diffraction patterns from CIF files
-14. **pattern_comparisons** - Comparison results between experimental and simulated patterns
-
-### Views (7 total)
-1. **cluster_statistics** - Cluster distribution statistics
-2. **spatial_cluster_distribution** - Spatial cluster mappings
-3. **llm_analysis_overview** - LLM analysis summaries
-4. **tag_statistics** - Structured tag analytics
-5. **batch_processing_stats** - Batch processing metrics
-6. **cif_statistics** - CIF file statistics
-7. **comparison_overview** - Pattern comparison results
-
-## Getting Started
-
-### 1. Prerequisites
-- Python 3.13+
-- PostgreSQL 17+
-- Docker (recommended for database)
-- uv package manager
-
-### 2. Database Setup
 ```bash
-# Start database containers
-docker-compose -f docker/docker-compose.yml up -d
-
-# Initialize database with schema
-python setup_database.py
+uv run --locked python setup_database.py --config config/database.json
 ```
 
-### 3. Configuration
-Copy and edit configuration files:
-```bash
-cp config/db_config_example.json config/database.json
-cp config/api_keys_example.json config/api_keys.json
-```
+## Import
 
-Fill in database credentials in `config/database.json` and configure LLM API keys in `config/api_keys.json`.
+The browser lists configured local directories through the backend. Large files are read directly by Python instead of being uploaded through the browser. Single-file import inspects headers and frame counts, copies MIB and HDR into a private staging directory, computes SHA-256, converts actual scan rows to MAT files, and writes scan references in one database transaction. Diffraction points use PostgreSQL COPY.
 
-## Core Functionality
+Duplicate scan names and duplicate stored SHA-256 values are rejected. Old scans without a digest cannot be recognized as content duplicates. Failed or cancelled imports roll back catalog writes and remove this import's staged files.
 
-### Data Processing Workflow
+Supported formats are `U08`, `U16`, and `U32`, with detector layouts `1x1`, `2x2`, and `2x2G`. Packed `R64` is unsupported. Explicit dimensions override metadata; rows × columns must equal the frame count. Missing dimensions require user input, except that 65536 frames retain the original 256×256 default. Keep the companion `.hdr` beside the `.mib`.
 
-1. **Data Import**: Convert raw .mib files to .mat format and store in database
-2. **Clustering Analysis**: Use K-Means for unsupervised classification of diffraction patterns
-3. **LLM Analysis**: Semantic analysis of clustering results using large language models
-4. **CIF Simulation**: Generate theoretical patterns from crystal structure databases
-5. **Pattern Comparison**: Compare experimental and simulated patterns for identification
-6. **Result Storage**: Persist all analysis results to database
+Directory import processes MIB files immediately inside the selected directory, without recursion. Optional dimensions apply to the entire batch.
 
-### Available Tools
+## Analysis and history
 
-#### 1. Database Management Tools
+The analysis core loads one MAT row at a time and extracts features in batches. It retains the feature matrix for PCA and K-Means instead of concatenating the full raw scan into float32. Feature memory still grows with the number of patterns; PCA is not an unlimited streaming implementation.
 
-| Tool | Description |
-|:-----|:------------|
-| **`list_schemas`** | Lists all schemas in the database |
-| **`list_objects`** | Lists objects in a specified schema |
-| **`get_object_details`** | Shows detailed information about a specific database object |
-| **`execute_sql`** | Executes any SQL query |
+Each clustering run receives a separate result directory:
 
-#### 2. Scan Analysis Tools
+| File | Contents |
+|---|---|
+| `clustering.npz` | `labels`, `xs`, `ys`, distances to cluster centers; coordinates are one-based |
+| `parameters.json` | Seed, device selection, polar feature settings, PCA and K-Means settings |
+| `cluster_map.png` | Neutral cluster map |
+| `montages/cluster_N.png` | Nearest representative patterns for each cluster |
+| `individual_images/cluster_N/` | Individual representative images |
 
-| Tool | Description |
-|:-----|:------------|
-| **`analyze_scan_tool`** | Runs clustering analysis on a 4D-STEM scan |
-| **`display_classification_results`** | Displays classification results for a scan |
-| **`verify_cluster_storage_tool`** | Verifies cluster assignments are stored for a scan |
-| **`regenerate_classification_map_tool`** | Regenerates the classification map using LLM-assigned classes |
-| **`show_classification_map`** | Displays a classification map from a file URL |
-| **`list_classification_images`** | Lists all classification images and maps for a scan |
-| **`show_classification_overview`** | Shows a comprehensive classification overview for a scan (including maps and sample montages) |
+`diffraction_patterns` stores current labels, while `pattern_cluster_assignments` retains the assignments of each run. The browser can select historical runs. GUI, MCP, and CLI clustering share a process lock.
 
-#### 3. Scan Ingestion and Information Retrieval Tools
+## LLM and human annotation
 
-| Tool | Description |
-|:-----|:------------|
-| **`ingest_scan_from_mib`** | Processes a .mib file, unpacks into .mat files, and catalogs the scan |
-| **`list_ingested_scans`** | Lists a high-level summary of all ingested scientific scans |
-| **`get_scan_details`** | Retrieves detailed information about the raw .mat files in a scan |
+LLM requests use Gemini's `generateContent` format, directly or through a compatible proxy. The default pipeline selects five evenly spaced samples per cluster and uses three concurrent requests.
 
-#### 4. Raw Image Handling Tools
+Responses require a valid `classification_code`: 0 vacuum, 1 crystalline, 2 amorphous, 3 mixed. Failed or invalid responses remain errors. Cluster numbers never serve as fallback material labels. The model, prompt, and returned samples are retained with the analysis and task report.
 
-| Tool | Description |
-|:-----|:------------|
-| **`show_raw_image`** | Displays a raw image from the database (identified by its image_in_mat, mat_number, and scan_id) along with LLM analysis tags |
+Human category and note are saved separately in `cluster_annotations`. Repeated LLM analysis updates the displayed suggestion; previous browser task reports remain available. The browser records the target clustering run when submitting an LLM task.
 
-#### 5. Cluster Analysis and LLM Tools
+## Tasks
 
-| Tool | Description |
-|:-----|:------------|
-| **`generate_cluster_consensus_tool`** | Generates consensus descriptions for all clusters in a scan using LLM |
-| **`show_cluster_consensus`** | Displays a consensus description for a specific cluster in a scan |
-| **`show_cluster_montages`** | Displays representative diffraction patterns for a specific cluster in a scan |
-| **`run_llm_cluster_analysis`** | Runs LLM-based analysis on clustered diffraction patterns for a specific scan |
-| **`get_llm_analysis_summary`** | Gets a summary of all LLM analyses performed on a scan |
-| **`get_cluster_llm_details`** | Gets detailed LLM analysis results for a specific cluster |
+Task JSON and logs are persisted under `workspace/jobs/`. A serial queue launches independent Python workers. Status values are `queued`, `running`, `succeeded`, `failed`, and `cancelled`.
 
-#### 6. CIF File Handling Tools
+Browser refresh or closure does not stop processing. Cancellation is cooperative, taking effect at processing checkpoints. PCA, K-Means, and current LLM network requests finish before cancellation is observed. Already committed operations are not undone; a task that has committed its final result reports success. LLM clusters commit separately, so earlier completed cluster results survive a later failure or cancellation.
 
-| Tool | Description |
-|:-----|:------------|
-| **`download_cif_file`** | Downloads a CIF file from a crystallography database and stores it in the database |
-| **`upload_cif_file`** | Uploads a local CIF file to the database |
-| **`generate_simulated_patterns`** | Generates simulated diffraction patterns from a CIF file |
-| **`compare_patterns`** | Compares experimental diffraction patterns with simulated patterns from a CIF file |
+Normal shutdown waits for the active worker. Queued tasks continue after restart, while crashed workers are marked failed. Retry creates a new task rather than resuming a partially completed step.
 
-#### 7. LLM Connectivity and Testing Tools
+## HTTP endpoints
 
-| Tool | Description |
-|:-----|:------------|
-| **`test_llm_analysis`** | Tests LLM connectivity by analyzing a local image file with the configured API. |
+All paths below have the `/api` prefix.
 
-## Project Structure
+| Method | Path | Purpose |
+|---|---|---|
+| GET / PUT | `/settings` | Read displayable settings / save configuration |
+| GET | `/status`, `/files?path=...` | Connection status / directory listing |
+| POST | `/inspect`, `/imports`, `/import-folders` | Inspect or import files; bodies include `path`, optional `scan_shape` |
+| GET | `/scans`, `/scans/{id}` | Scans and run history |
+| GET | `/scans/{id}/overview`, `/scans/{id}/pattern?row=1&col=1` | Preview images |
+| POST | `/scans/{id}/cluster` | Submit `k`, `seed`, optional `device` |
+| POST | `/scans/{id}/llm` | Submit optional `cluster_id`, `samples`, `concurrency` |
+| GET | `/runs/{id}`, `/runs/{id}/grid`, `/runs/{id}/files/{name}` | Results, spatial labels, artifacts |
+| PUT | `/clusters/{id}/annotation` | Save `category` and `note`; null category clears the annotation |
+| GET | `/jobs`, `/jobs/{id}`, `/jobs/{id}/log`, `/jobs/{id}/report` | Task records, logs, downloadable reports |
+| POST | `/jobs/{id}/cancel`, `/jobs/{id}/retry` | Request cancellation or retry |
 
-```
-4DLLM/
-├── config/                 # Configuration files
-├── helper/                 # Command line tools
-├── postgres_mcp/           # Database related modules
-├── api_manager/            # API key management
-├── docker/                 # Docker configuration
-├── cif_analysis/           # CIF analysis modules
-├── SQL/                    # Database schema
-├── Data/                   # Processed data files
-├── Raw/                    # Raw data files
-└── docs/                   # Documentation
-```
+The frontend lives in `frontend/`. For development, start the backend with `uv run --locked python -m workbench --no-browser`, and run `npm run dev` inside `frontend/`. Production frontend assets are built with `npm run build` and served by FastAPI.
 
-## Database Design Principles
+## MCP and CIF
 
-### Normalized Structure
-The database follows normalization principles to eliminate redundancy and ensure data integrity:
-- Each entity has a single source of truth
-- Relationships are enforced through foreign key constraints
-- Cascading deletes maintain referential integrity
+Scan import, clustering, image display, LLM, and CIF tools remain available. `ingest_scan_from_mib` accepts optional `scan_rows`, `scan_columns`, and `scan_name`. `check_analysis_status` returns browser task records. Synchronous MCP and CLI calls do not join the browser queue.
 
-### Layered Architecture
-The schema is organized in logical layers:
-1. **Raw Data Layer** - Original scan data storage
-2. **Clustering Analysis Layer** - K-Means processing results
-3. **LLM Analysis Layer** - Semantic interpretation of clusters
-4. **LLM Results Layer** - Flattened analysis results for querying
-5. **CIF Simulation Layer** - Crystal structure simulation and comparison
+Disabled database tuning, health, Explain, and top-query modules were removed. SQL execution and read-only SQL validation remain.
 
-### Optimized for Analytics
-Strategic indexes and views enable efficient querying:
-- Spatial indexes for coordinate-based queries
-- Composite indexes for common filter combinations
-- Pre-computed views for frequent analytical patterns
-
-## Advanced Features
-
-### Rate-Limited LLM Processing
-The system implements intelligent rate limiting to prevent overwhelming LLM APIs:
-- Configurable concurrency limits (default: 64 parallel tasks)
-- Automatic retry with exponential backoff
-- Batch processing for improved throughput
-
-### Pattern Comparison Framework
-Advanced pattern comparison capabilities:
-- Multiple similarity metrics (SSIM, MSE, cosine similarity, etc.)
-- Batch comparison between experimental and simulated patterns
-- Confidence scoring for automated identification
-
-### Extensible Tagging System
-Structured tagging system for flexible categorization:
-- Domain-specific categories (phase_type, crystallinity_level, etc.)
-- Confidence scores for uncertainty quantification
-- Statistical views for tag analysis
-
-## Open Source Licensing & Acknowledgments
-
-### Core Project
-- **4DLLM**: This project is open-sourced on GitHub.
-  - **Repository**: [https://github.com/Frank0415/4DLLM](https://github.com/Frank0415/4DLLM)
-  - **License**: [MIT License](https://opensource.org/licenses/MIT)
-
-### Dependent Open-Source Components
-This project is built upon the following excellent open-source projects:
-
-1.  **MCP Server Framework**:
-    - Based on [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp).
-    - **License**: [MIT License](https://opensource.org/licenses/MIT)
-
-2.  **Image Handling Functionality**:
-    - Image reading capabilities are based on [ia-programming/mcp-images](https://github.com/ia-programming/mcp-images).
-    - **License**: [MIT License](https://opensource.org/licenses/MIT)
-
-### Related Projects
-- **4DLLM-arxiv-mcp-server**: Our MCP server for ArXiv paper analysis is also open-sourced.
-  - **Repository**: [https://github.com/Frank0415/4DLLM-arxiv-mcp-server](https://github.com/Frank0415/4DLLM-arxiv-mcp-server)
-  - **Based on**: [blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)
-  - **License**: [Apache-2.0 license](https://opensource.org/licenses/Apache-2.0)
-
-We extend our sincere gratitude to all the above projects and their contributors.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Failed**: Check if Docker containers are running and verify database credentials
-2. **LLM API Errors**: Check API key configuration and ensure network connectivity
-3. **Insufficient Memory**: Reduce batch size or switch to CPU processing
-4. **Missing Dependencies**: Ensure all required Python packages are installed
-
-### Getting Help
-
-For issues not covered in this documentation, please check the logs for detailed error messages and consult the relevant module documentation.
-
----
-*Documentation last updated: September 2025*
+Install optional CIF simulation dependencies using `uv sync --extra simulation`. CIF pattern comparison remains unimplemented and returns `not_implemented`. The first browser interface covers scan import, exploration, clustering, and LLM analysis.

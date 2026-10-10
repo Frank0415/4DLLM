@@ -3,6 +3,6 @@
     "your-api-key-1",
     "your-api-key-2"
   ],
-  "base_url": "https://api.proxy.org/google",
-  "model": "model-name"
+  "base_url": "https://generativelanguage.googleapis.com",
+  "model": "gemini-2.5-pro"
 }

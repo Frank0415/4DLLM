@@ -1,95 +1,60 @@
 # 4DLLM
 
-[![Python Version](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![PostgreSQL Version](https://img.shields.io/badge/PostgreSQL-17+-336791.svg)](https://www.postgresql.org/download/)
-[![Docker](https://img.shields.io/badge/Docker-✓-1D63ED.svg)](https://www.docker.com/)
-[![UV](https://img.shields.io/badge/uv-✓-de5fe9.svg)](https://docs.astral.sh/uv/) 
-[![Model Context Protocol](https://img.shields.io/badge/MCP-Protocol-eeeeee.svg)](https://modelcontextprotocol.io/)
-[![License: MIT](https://img.shields.io/github/license/Frank0415/4DLLM
-)](https://opensource.org/licenses/MIT)
+[中文](README_cn.md) · English
 
-**Language**: English | [中文 / Chinese](README.md)
+A local browser workbench for importing, exploring, and analyzing 4D-STEM scans. The Python analysis core is shared by the browser application, CLI, and MCP server.
 
-A powerful, database-centric MCP Server for automating the processing, analysis, and interpretation of 4D-STEM data. It integrates K-Means clustering, Large Language Model (LLM) semantic analysis, and crystallographic simulation (CIF) workflows, with PostgreSQL ensuring full traceability of all results.
+- Import a MIB file or a directory, retain companion HDR metadata, and preview diffraction patterns.
+- Explore scan intensity and cluster maps; click a scan position to inspect its diffraction pattern.
+- Run polar feature extraction, PCA, and K-Means on CPU or CUDA.
+- Keep each clustering run, its parameters, and its result files separately.
+- Request optional Gemini-compatible LLM suggestions and record human annotations independently.
+- Follow a persistent task queue with progress, cancellation requests, retry, logs, and downloadable reports.
 
-## ✨ Core Features
+## Start
 
-*   **🔧 End-to-End Workflow**: Full automation from raw `.mib` files to LLM-generated semantic tags and crystal structure identification.
-*   **🧠 LLM Integration**: Leverages Large Language Models (e.g., GPT-4) to provide human-readable consensus descriptions and classification tags for diffraction pattern clusters.
-*   **🏗️ Database-Centric**: All data, parameters, and results are stored in PostgreSQL, guaranteeing reproducible analysis and perfect traceability.
-*   **⚡ MCP Protocol Support**: As a standard MCP Server, it integrates seamlessly with any MCP client (like Claude.ai, Cursor), dramatically enhancing research efficiency.
-*   **🔬 Domain Expert Design**: Designed for materials scientists and electron microscopists, offering specialized features like CIF simulation and comparison.
+Requirements: Python 3.13+, [uv](https://docs.astral.sh/uv/), Node.js/npm for the initial frontend build, and PostgreSQL 17+.
 
-## 🏗️ Structure
+```bash
+git clone git@github.com:Frank0415/4DLLM.git
+cd 4DLLM
+./run.sh
+```
 
-<div align="center">
-  <picture>
-      <img src="assets/struct_1.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-  <picture>
-      <img src="assets/struct_2.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-</div>
+The launcher builds the UI when needed and opens `http://127.0.0.1:8765`. On the first launch, if Docker is available, it starts the bundled PostgreSQL service. Otherwise, configure an existing database in **Settings**. The database must already exist; table creation and upgrades preserve existing records.
 
-## 🔬 Results
+The bundled database uses `postgres / 1234` and database `4dllm`, matching `config/db_config_example.json`. Configuration files containing credentials are ignored by Git.
 
-<div align="center">
-  <picture>
-      <img src="assets/results.jpg" width="80%" alt="ckpt-engine">
-  </picture>
-</div>
+```bash
+# Start the database independently
+docker compose -f docker/docker-compose.yml up -d postgres_db
 
-## 🚀 Quick Start
+# Run without opening a browser
+./run.sh --no-browser --port 8765
 
-### Prerequisites
-Ensure you have the following installed:
-- Python 3.13+
-- Docker and Docker Compose
-- UV package manager
+# MCP server
+uv run --locked python main.py --config config/database.json
+```
 
-### Installation & Setup
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/Frank0415/4DLLM.git
-    cd 4DLLM
-    ```
+## Import and analyze
 
-2.  **Sync dependencies with UV**:
-    ```bash
-    uv sync
-    ```
+1. Configure data directories and PostgreSQL in Settings.
+2. Select a MIB file in **Import**, inspect its first pattern, and confirm scan rows/columns. Directory import queues the MIB files directly inside that directory.
+3. Open **Scans**, select K and the compute device, and submit clustering.
+4. Explore the resulting clusters and historical runs. Optionally configure LLM keys, request suggestions, and save human classifications.
 
-3.  **Start the database**:
-    ```bash
-    docker-compose -f docker/docker-compose.yml up -d
-    ```
+Supported MIB storage formats: `U08`, `U16`, and `U32`; detector layouts: `1x1`, `2x2`, and `2x2G`. Packed `R64` is not supported. A scan shape must match the frame count exactly. Keep the `.hdr` beside its `.mib`; missing dimensions can be entered manually.
 
-4.  **Initialize the database schema**:
-    ```bash
-    python setup_database.py
-    ```
+Cluster numbers are neutral groups. Materials classes are stored as LLM suggestions or human annotations, never inferred from the cluster number.
 
-5.  **Configure API keys and database credentials**:
-    ```bash
-    cp config/db_config_example.json config/database.json
-    cp config/api_keys_example.json config/api_keys.json
-    ```
-    Fill in database credentials in `config/database.json` and configure LLM API keys in `config/api_keys.json`.
+See [workflow and API documentation](docs/documentation.md), [CLI usage](helper/CLI_TOOLS.md), and [Chinese documentation](docs/documentation_zh.md).
 
-## 📖 Documentation
+## Storage and optional simulation
 
-For comprehensive guides and available MCP tools, please refer to our [**full documentation**](docs/documentation.md).
+New data and results live under `workspace/` by default. Set `FOURDLLM_DATA_DIR` to change the storage directory, `FOURDLLM_CONFIG` to select a configuration file, or `DATABASE_URI` to supply the database connection. Existing imported scan paths remain usable.
 
-## 📜 License
+CIF management and simulation remain available through MCP. Install simulation dependencies with `uv sync --extra simulation`. CIF pattern comparison is currently unimplemented and returns `not_implemented`.
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+## License and acknowledgments
 
-## 🙏 Acknowledgments
-
-This project is built upon and inspired by several incredible open-source projects. We are deeply grateful to their creators:
-- **[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)** (MIT) - The foundation of our MCP Server.
-- **[ia-programming/mcp-images](https://github.com/ia-programming/mcp-images)** (MIT) - For image handling capabilities.
-- **[blazickjp/arxiv-mcp-server](https://github.com/blazickjp/arxiv-mcp-server)** (Apache-2.0) - Inspiration for our related [4DLLM-arxiv-mcp-server](https://github.com/Frank0415/4DLLM-arxiv-mcp-server).
-
----
-*Disclaimer: This project is a research platform and may require domain-specific expertise (4D-STEM, materials science) to use effectively.*
+MIT; see [LICENSE](LICENSE). This project incorporates work from [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) and [ia-programming/mcp-images](https://github.com/ia-programming/mcp-images); their license notices remain in [LICENSES](LICENSES).
